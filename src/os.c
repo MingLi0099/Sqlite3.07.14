@@ -12,6 +12,7 @@
 **
 ** This file contains OS interface code that is common to all
 ** architectures.
+** 本文件主要包括硬件无关的操作系统接口代码
 */
 #define _SQLITE_OS_C_ 1
 #include "sqliteInt.h"
@@ -24,8 +25,16 @@
 ** So we test the effects of a malloc() failing and the sqlite3OsXXX()
 ** function returning SQLITE_IOERR_NOMEM using the DO_OS_MALLOC_TEST macro.
 **
+** SQLite的sqlite3_vfs结构在默认情况下不能使用内存(
+** 事实上，os_unix.c使用OsOpen()可以使用部分内存)
+** 但是一些第三方应用可以使用内存。所以我们
+** 需要测试malloc()失败的情况，sqlite3OsXXX()相关函数在返回
+** SQLITE_IOERR_NOMEN相关参数时，使用DO_OS_MALLOC_TEST宏
+**
 ** The following functions are instrumented for malloc() failure 
 ** testing:
+**
+** 接下来的函数主要是按照malloc()失败测试分类
 **
 **     sqlite3OsRead()
 **     sqlite3OsWrite()
@@ -40,6 +49,8 @@
 **     sqlite3OsAccess()
 **     sqlite3OsFullPathname()
 **
+**     sqlite3Os*; Read(), Write(), Sync(), FileSize(). Lock(), CheckReservedLock(), FileControl()
+**                      ShmMap(), Open(), Delect(), Access(), FullPathname()
 */
 #if defined(SQLITE_TEST)
 int sqlite3_memdebug_vfs_oom_test = 1;
@@ -58,6 +69,11 @@ int sqlite3_memdebug_vfs_oom_test = 1;
 ** of the sqlite3_file object.  This is mostly just syntactic sugar. All
 ** of this would be completely automatic if SQLite were coded using
 ** C++ instead of plain old C.
+**
+**  接下来的日志功能在sqlite3_file对象上是一种十分方便的接口
+** 这是一种同步蜜糖。所有的这些在使用C++而不是单纯的C
+** 时，就会有这些功能。
+**
 */
 int sqlite3OsClose(sqlite3_file *pId){
   int rc = SQLITE_OK;
@@ -105,6 +121,12 @@ int sqlite3OsCheckReservedLock(sqlite3_file *id, int *pResOut){
 ** really care if the VFS receives and understands the information since it
 ** is only a hint and can be safely ignored.  The sqlite3OsFileControlHint()
 ** routine has no return value since the return value would be meaningless.
+**
+** 在进行一些可能失败的操作时，我们需要使用sqlite3OsFileControl()函数
+** 来了解错误信息。同时在VFS文件中需要抛出错误但又不关心或者
+** 理解接收的VFS错误，需要使用sqlite3OsFileControlHint()函数，而这也是因为
+** VFS抛出的就仅仅可以作为参考，实际上经常都是无意义的。
+** 
 */
 int sqlite3OsFileControl(sqlite3_file *id, int op, void *pArg){
   DO_OS_MALLOC_TEST(id);
@@ -144,6 +166,8 @@ int sqlite3OsShmMap(
 /*
 ** The next group of routines are convenience wrappers around the
 ** VFS methods.
+** 
+** 接下来的部分对于VFS是一个便捷的对象方法
 */
 int sqlite3OsOpen(
   sqlite3_vfs *pVfs, 
@@ -157,7 +181,12 @@ int sqlite3OsOpen(
   /* 0x87f7f is a mask of SQLITE_OPEN_ flags that are valid to be passed
   ** down into the VFS layer.  Some SQLITE_OPEN_ flags (for example,
   ** SQLITE_OPEN_FULLMUTEX or SQLITE_OPEN_SHAREDCACHE) are blocked before
-  ** reaching the VFS. */
+  ** reaching the VFS. 
+  **
+  ** 0x87f7f在SQLITE_OPEN_flags中是一个掩码，在VFS层中仍保持有效
+  ** 有些(类似SQLITE_OPEN_FULLMUTEX或是SQLITE_OPEN_SHAREDCACHE)标志在
+  ** 到达VFS层前就失效了
+  */
   rc = pVfs->xOpen(pVfs, zPath, pFile, flags & 0x87f7f, pFlagsOut);
   assert( rc==SQLITE_OK || pFile->pMethods==0 );
   return rc;
@@ -213,6 +242,10 @@ int sqlite3OsCurrentTimeInt64(sqlite3_vfs *pVfs, sqlite3_int64 *pTimeOut){
   ** (if iVersion is 2 or greater and the function pointer is not NULL) and
   ** will fall back to xCurrentTime() if xCurrentTimeInt64() is
   ** unavailable.
+  **
+  ** 主要用于xCurrentTimeInt64()方法可以调用时获取当前的数据和时间
+  ** 但是在iVersion为2或者更高的时候，函数指针非空。在xCurrentTimeInt64()
+  ** 不可调用时，xCurrentTime()将没有返回值。
   */
   if( pVfs->iVersion>=2 && pVfs->xCurrentTimeInt64 ){
     rc = pVfs->xCurrentTimeInt64(pVfs, pTimeOut);
@@ -257,6 +290,11 @@ int sqlite3OsCloseFree(sqlite3_file *pFile){
 ** sqlite3_os_init(). The purpose of the wrapper is to provide the
 ** ability to simulate a malloc failure, so that the handling of an
 ** error in sqlite3_os_init() by the upper layers can be tested.
+**
+** 这个函数主要是sqlite3_os_init()在OS层特殊实现的封装。
+** 封装的初衷是用于模拟malloc分配的错误，所以在
+** sqlite3_os_init()中发生的错误可以在上层中得到测试。
+**
 */
 int sqlite3OsInit(void){
   void *p = sqlite3_malloc(10);
@@ -267,6 +305,7 @@ int sqlite3OsInit(void){
 
 /*
 ** The list of all registered VFS implementations.
+** 所有已经注册的VFS实现
 */
 static sqlite3_vfs * SQLITE_WSD vfsList = 0;
 #define vfsList GLOBAL(sqlite3_vfs *, vfsList)
@@ -274,6 +313,9 @@ static sqlite3_vfs * SQLITE_WSD vfsList = 0;
 /*
 ** Locate a VFS by name.  If no name is given, simply return the
 ** first VFS on the list.
+**
+** 根据VFS名字存储，如果之前没有命名，就仅仅返回VFS列表首项
+**
 */
 sqlite3_vfs *sqlite3_vfs_find(const char *zVfs){
   sqlite3_vfs *pVfs = 0;
@@ -298,6 +340,9 @@ sqlite3_vfs *sqlite3_vfs_find(const char *zVfs){
 
 /*
 ** Unlink a VFS from the linked list
+**
+** 从VFS链接表中解链接
+**
 */
 static void vfsUnlink(sqlite3_vfs *pVfs){
   assert( sqlite3_mutex_held(sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_MASTER)) );
@@ -320,6 +365,9 @@ static void vfsUnlink(sqlite3_vfs *pVfs){
 ** Register a VFS with the system.  It is harmless to register the same
 ** VFS multiple times.  The new VFS becomes the default if makeDflt is
 ** true.
+**
+** 在系统中注册VFS，同一个VFS项目多次注册并不会产生什么错误
+** 最新的一个VFS项目默认情况下为真
 */
 int sqlite3_vfs_register(sqlite3_vfs *pVfs, int makeDflt){
   MUTEX_LOGIC(sqlite3_mutex *mutex;)
@@ -344,6 +392,8 @@ int sqlite3_vfs_register(sqlite3_vfs *pVfs, int makeDflt){
 
 /*
 ** Unregister a VFS so that it is no longer accessible.
+**
+** 没有注册的VFS项目将不可访问
 */
 int sqlite3_vfs_unregister(sqlite3_vfs *pVfs){
 #if SQLITE_THREADSAFE
