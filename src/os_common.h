@@ -13,9 +13,11 @@
 ** This file contains macros and a little bit of code that is common to
 ** all of the platform-specific files (os_*.c) and is #included into those
 ** files.
-**
+** 本文件包括宏定义以及与平台无关的文件
 ** This file should be #included by the os_*.c files only.  It is not a
 ** general purpose header file.
+** 本文件不仅仅是一个普通的头文件
+** 应该被os_*.c文件引用，
 */
 #ifndef _OS_COMMON_H_
 #define _OS_COMMON_H_
@@ -24,6 +26,10 @@
 ** At least two bugs have slipped in because we changed the MEMORY_DEBUG
 ** macro to SQLITE_DEBUG and some older makefiles have not yet made the
 ** switch.  The following code should catch this problem at compile-time.
+** 由于我们改变了位于SQLITE_DEBUG的MEMORY_DEBUG宏定义
+** 所以至少报告了两个错误，部分过时的makefile文件
+** 没有进行相关的调整，所以接下来的代码在编译时
+** 捕获这些异常
 */
 #ifdef MEMORY_DEBUG
 # error "The MEMORY_DEBUG macro is obsolete.  Use SQLITE_DEBUG instead."
@@ -42,12 +48,15 @@
 /*
 ** Macros for performance tracing.  Normally turned off.  Only works
 ** on i486 hardware.
+** 运行时参数宏定义。一般情况下关闭。
+** 仅仅在i486硬件上运行
 */
 #ifdef SQLITE_PERFORMANCE_TRACE
 
 /* 
 ** hwtime.h contains inline assembler code for implementing 
 ** high-performance timing routines.
+** hwtime.h 内联了汇编时间统计函数
 */
 #include "hwtime.h"
 
@@ -66,6 +75,8 @@ static sqlite_uint64 g_elapsed;
 ** If we compile with the SQLITE_TEST macro set, then the following block
 ** of code will give us the ability to simulate a disk I/O error.  This
 ** is used for testing the I/O recovery logic.
+** 如果我们在SQLITE_TEST 宏参数下编译，接下来的代码块
+** 让我们可以对I/O错误进行模拟。用于测试I/O恢复逻辑
 */
 #ifdef SQLITE_TEST
 int sqlite3_io_error_hit = 0;            /* Total number of I/O Errors */
@@ -104,6 +115,7 @@ static void local_ioerr(){
 
 /*
 ** When testing, keep a count of the number of open files.
+** 测试时，用于记录被打开文件的个数
 */
 #ifdef SQLITE_TEST
 int sqlite3_open_file_count = 0;
