@@ -12,56 +12,67 @@
 **
 ** This file contains the VFS implementation for unix-like operating systems
 ** include Linux, MacOSX, *BSD, QNX, VxWorks, AIX, HPUX, and others.
-**这个文件包含包括Linux,MacOSX,* BSD,QNX,VxWorks,AIX,HPUX等类unix操作系统的VFS实现。
 **
 ** There are actually several different VFS implementations in this file.
 ** The differences are in the way that file locking is done.  The default
 ** implementation uses Posix Advisory Locks.  Alternative implementations
 ** use flock(), dot-files, various proprietary locking schemas, or simply
 ** skip locking all together.
-**实际上在这个文件中有几种不同的VFS实现(VFS的作用就是采用标准的Unix系统调
-**用读写位于不同物理介质上的不同文件系统。VFS是一个可以让open()、read()、write()
-**等系统调用不用关心底层的存储介质和文件系统类型就可以工作的粘合层。)
-**差异在于文件加锁的方式。默认的实现是使用Posix咨询锁。替代实现使用flock(),dot文件,
-**各种专有锁定模式,或者只是跳过锁定在一起.
 **
 ** This source file is organized into divisions where the logic for various
 ** subfunctions is contained within the appropriate division.  PLEASE
 ** KEEP THE STRUCTURE OF THIS FILE INTACT.  New code should be placed
 ** in the correct division and should be clearly labeled.
-**这些源文件组成了包含了各种逻辑子函数的分区.请保持这个文件结构的完整
-**新代码应放置在正确的分区,并且都应有明确的标示。
-
+**
+** 本文件包括Unix类操作系统中VFS实现，包括Linux, MacOSX, *BSD, QNX
+** VxWorks, AIX, HPUX, 和其他的。
+** 实际上，在本文件中包含有VFS的多种实现，包括不同的文件
+** 锁实现。默认的情况使用Posix咨询锁，可用选择的方式是使用
+** flock(), 点文件，各种专有的锁定格式，或是跳过所有的锁。
+** 这个源文件被组织为各种逻辑分区，子功能包括适当的划分，
+** 必须要保持本文件的完整性，新代码必须要进行正确的划分，
+** 进行明确的标记。
 **
 ** The layout of divisions is as follows:
 **
-**   *  General-purpose declarations and utility functions.  通用的声明和实用功能
-**   *  Unique file ID logic used by VxWorks.   VxWorks 所使用的唯一的文件 ID 逻辑
-**   *  Various locking primitive implementations (all except proxy locking):  锁定原语的实现（除了代理锁定）
-**      + for Posix Advisory Locks   Posix咨询锁 
-**      + for no-op locks		无操作锁
-**      + for dot-file locks		点文件锁
-**      + for flock() locking	聚集锁
-**      + for named semaphore locks (VxWorks only)  命名信号锁（只存在于VxWorks）
-**      + for AFP filesystem locks (MacOSX only)		AFP系统文件锁（只存在于MacOSX）
-**   *  sqlite3_file methods not associated with locking. sqlite3_file方法和加锁没有关系
+**   *  General-purpose declarations and utility functions.
+**   *  Unique file ID logic used by VxWorks.
+**   *  Various locking primitive implementations (all except proxy locking):
+**      + for Posix Advisory Locks
+**      + for no-op locks
+**      + for dot-file locks
+**      + for flock() locking
+**      + for named semaphore locks (VxWorks only)
+**      + for AFP filesystem locks (MacOSX only)
+**   *  sqlite3_file methods not associated with locking.
 **   *  Definitions of sqlite3_io_methods objects for all locking
 **      methods plus "finder" functions for each locking method.
-**      sqlite3_io_methods对象的定义为所有锁定方法增加了"finder"功能
-**   *  sqlite3_vfs method implementations. 
-**      sqlite3_vfs方法实现
+**   *  sqlite3_vfs method implementations.
 **   *  Locking primitives for the proxy uber-locking-method. (MacOSX only)
-**       proxy uber-locking-method的锁定原语（只在MacOSX上有）
-**
 **   *  Definitions of sqlite3_vfs objects for all locking methods
 **      plus implementations of sqlite3_os_init() and sqlite3_os_end().
-**      为所有加锁方法定义了sqlite3_vfs对象，增加了sqlite3_os_init() 和 sqlite3_os_end()的实现.
+**
+** 分区的全景如下：
+**      通用的说明和实用功能
+**      在VxWorks中使用的特殊文件ID逻辑
+**	  各种锁独立的实现（除了代理锁定）：
+**      + 咨询锁
+**	   +无操作锁
+**      +点文件锁
+**      +flock()锁
+**      +信号量锁（仅在VxWorks）
+**      +AFP文件系统锁(仅在MacOSX)
+**  sqlite3_file没有和锁关联的方法
+**  sqlite3_io_methods对象为所有的锁对象添加了查找功能
+**  锁文件的代理锁定方式(仅在MacOSX上)
+**  在sqlite3_os_init()和sqlite3_os_ends*()
+**  对于sqlite3_vfs对象所有锁定方式的实现方式，"
 */
 #include "sqliteInt.h"
-#if SQLITE_OS_UNIX              /* This file is used on unix only */  //这个文件只用于unix
+#if SQLITE_OS_UNIX              /* This file is used on unix only */
 
 /*
-** There are various methods for file locking used for concurrency   多种用于并发控制的文件加锁的方法
+** There are various methods for file locking used for concurrency
 ** control:
 **
 **   1. POSIX locking (the default),
@@ -76,9 +87,21 @@
 ** is defined to 1.  The SQLITE_ENABLE_LOCKING_STYLE also enables automatic
 ** selection of the appropriate locking style based on the filesystem
 ** where the database is located.  
-** 4、5、7只可用定义为1的SQLITE_ENABLE_LOCKING_STYLE。SQLITE_ENABLE_LOCKING_STYLE
-** 还支持基于数据库所在的文件系统自动选择适当的加锁风格。
-*/
+** 
+** 在进行文件锁定管理中有许多方法；
+** 1. 默认情况下为POSIX 锁定
+** 2. 没有文件锁
+** 3. dot文件链接，
+** 4. flock()文件
+** 5. AFP文件锁定（仅用于OSX）
+** 6. POSIX信号量(只有VXWork)
+** 7, 代理锁定，（进入OSX系统）
+** 
+** 方法字符类型4，5，7都只在SQLITE_ENABLE_LockIngPStyle中设置为1
+** SQLITE_ENABLE_LOCKING_STYLE也会根据数据库所在的位置自动选择
+** 恰当的锁形式
+**
+***/
 #if !defined(SQLITE_ENABLE_LOCKING_STYLE)
 #  if defined(__APPLE__)
 #    define SQLITE_ENABLE_LOCKING_STYLE 1
@@ -90,7 +113,8 @@
 /*
 ** Define the OS_VXWORKS pre-processor macro to 1 if building on 
 ** vxworks, or 0 otherwise.
-如果基于vxworks，定义OS_VXWORKS预处理器宏为1，否则为0
+**
+** 如果工作在vxworks上，定义OS_VXWORKS预定义宏为1，否则为0
 */
 #ifndef OS_VXWORKS
 #  if defined(__RTP__) || defined(_WRS_KERNEL)
@@ -104,7 +128,6 @@
 ** These #defines should enable >2GB file support on Posix if the
 ** underlying operating system supports it.  If the OS lacks
 ** large file support, these should be no-ops.
-** 这些#define应该使>2GB的文件支持Posix，如果底层操作系统支持的话。如果操作系统不支持大文件,就应该无操作
 **
 ** Large file support can be disabled using the -DSQLITE_DISABLE_LFS switch
 ** on the compiler command line.  This is necessary if you are compiling
@@ -113,18 +136,25 @@
 ** without this option, LFS is enable.  But LFS does not exist in the kernel
 ** in RedHat 6.0, so the code won't work.  Hence, for maximum binary
 ** portability you should omit LFS.
-** 支持大文件可以使用编译器命令行上的-DSQLITE_DISABLE_LFS 开关禁用。这是必要的，
-** 如果你正在一个最近的机器上进行编译（如:RedHat 7.2）但是又希望代码在较旧的机器上工作（如:RedHat 6.0）。
-** 如果你在RedHat 7.2上编译，但没有这个选项,LFS启用（Linux from Scratch，就是一种从网上直接下载源码，
-** 从头编译LINUX的安装方式）。但LFS并不存在于RedHat6.0的内核,所以代码不能工作。因此,为了达到最大的二进制可移植性，
-** 应该省略LFS。
 **
 ** The previous paragraph was written in 2005.  (This paragraph is written
 ** on 2008-11-28.) These days, all Linux kernels support large files, so
 ** you should probably leave LFS enabled.  But some embedded platforms might
 ** lack LFS in which case the SQLITE_DISABLE_LFS macro might still be useful.
-** 前一段是在2005年写的。(这一段是在2008-11-28写的)这些天来,所有的Linux内核都支持大文件,所以你应该放弃启用LFS。
-** 但是一些嵌入式平台可能缺乏LFS，在这种情况下,SQLITE_DISABLE_LFS宏可能仍然是有用的。
+**
+** 这些定义使得需要支持大于2GB内存的POSIX文件可以
+** 在操作系统层支持。如果操作系统层缺少这种支持，
+** 那么就不应该有这些操作。
+**
+** 在编译器命令行中应该使用-DSQLITE_DISABLE_LFS开关禁止使用大文件
+** 如果你在一些最近的机器上编译但是希望在旧一点的版本上工作
+** 如果你在RedHat7.2上没有选择这个选项，默认开启LFS，但是由于在
+** RedHat6.0上面没有LFS，这个代码就不会工作。因此，对于最大版本的
+** 可携带二进制文件应该省略LFS选项
+**
+** 上面一段是在2005时写的（本段是在2008-11-28）最近，所有的Linux内核
+** 都支持大文件，所以可以忽略LFS选项，但是对于一些嵌入式平台
+** 可能工作在缺少LFS的环境，SQLITE_DISABLE_LFS宏仍然是有效的
 */
 #ifndef SQLITE_DISABLE_LFS
 # define _LARGE_FILE       1
@@ -135,7 +165,7 @@
 #endif
 
 /*
-** standard include files.标准包含文件
+** standard include files.
 */
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -158,7 +188,7 @@
 #  include <sys/file.h>
 #  include <sys/param.h>
 # endif
-#endif /* SQLITE_ENABLE_LOCKING_STYLE */
+#endif /* SQLITE_ENABLE_LOCKING_STYLE  SQLITE允许锁形式*/
 
 #if defined(__APPLE__) || (SQLITE_ENABLE_LOCKING_STYLE && !OS_VXWORKS)
 # include <sys/mount.h>
@@ -169,14 +199,16 @@
 #endif
 
 /*
-** Allowed values of unixFile.fsFlags         unixFile.fsFlags允许的值
+** Allowed values of unixFile.fsFlags 运行unixFile.fsFlags
 */
 #define SQLITE_FSFLAGS_IS_MSDOS     0x1
 
 /*
 ** If we are to be thread-safe, include the pthreads header and define
 ** the SQLITE_UNIX_THREADS macro.
-** 如果希望线程安全，包括线程头部并且定义SQLITE_UNIX_THREADS宏
+**
+** 如果我们需要达到进程安全，需要包括pthreads头文件
+** 且定义SQLITE_UNIX_THREADS宏
 */
 #if SQLITE_THREADSAFE
 # include <pthread.h>
@@ -184,78 +216,89 @@
 #endif
 
 /*
-** Default permissions when creating a new file  创建一个新文件时的默认权限
+** Default permissions when creating a new file
+**
+** 在创建新文件时的权限
 */
 #ifndef SQLITE_DEFAULT_FILE_PERMISSIONS
 # define SQLITE_DEFAULT_FILE_PERMISSIONS 0644
 #endif
 
 /*
-** Default permissions when creating auto proxy dir  创建自动代理路径时的默认权限
+** Default permissions when creating auto proxy dir
+**
+** 创建自动文件时的默认权限
 */
 #ifndef SQLITE_DEFAULT_PROXYDIR_PERMISSIONS
 # define SQLITE_DEFAULT_PROXYDIR_PERMISSIONS 0755
 #endif
 
 /*
-** Maximum supported path-length.     路径长度支持的最大值
+** Maximum supported path-length.
+**
+** 对于路径长度的最大值
 */
 #define MAX_PATHNAME 512
 
 /*
 ** Only set the lastErrno if the error code is a real error and not 
 ** a normal expected return code of SQLITE_BUSY or SQLITE_OK
-** 只能设置lastErrno，如果错误代码是一个真正的错误，而不是一个正常的预期的SQLITE_BUSY或SQLITE_OK返回代码
+** 
+** 如果错误代码是一个实际中的错误同时不正常返回
+** SQLITE_BUSY或SQLITE_OK,仅设置lastErrno
 */
 #define IS_LOCK_ERROR(x)  ((x != SQLITE_OK) && (x != SQLITE_BUSY))
 
-/* Forward references */    //前向引用
-typedef struct unixShm unixShm;               /* Connection shared memory */ //连接共享内存
-typedef struct unixShmNode unixShmNode;       /* Shared memory instance */  //共享内存实例
-typedef struct unixInodeInfo unixInodeInfo;   /* An i-node */ //一个i节点
-typedef struct UnixUnusedFd UnixUnusedFd;     /* An unused file descriptor */ //一个未使用的文件描述符
+/* Forward references */
+typedef struct unixShm unixShm;               /* Connection shared memory */
+typedef struct unixShmNode unixShmNode;       /* Shared memory instance */
+typedef struct unixInodeInfo unixInodeInfo;   /* An i-node */
+typedef struct UnixUnusedFd UnixUnusedFd;     /* An unused file descriptor */
 
 /*
 ** Sometimes, after a file handle is closed by SQLite, the file descriptor
 ** cannot be closed immediately. In these cases, instances of the following
 ** structure are used to store the file descriptor while waiting for an
 ** opportunity to either close or reuse it.
-** 有时，SQLite 关闭文件句柄后，不能立即关闭文件描述符。在这些情况下，下面的结构的实例用于存储的文件描述符，
-** 同时等待机会，要么关闭或重用它。
+**
+** 有时，在SQLite关闭一个文件句柄之后，文件描述符并不能被
+** 即刻关闭，在这些情况下，下列对象的实例都用于存储文件
+** 描述，在等待关闭或者重用的机会
 */
 struct UnixUnusedFd {
-  int fd;                   /* File descriptor to close */  //要关闭的文件描述符
-  int flags;                /* Flags this file descriptor was opened with */  //打开此文件描述符的标志
-  UnixUnusedFd *pNext;      /* Next unused file descriptor on same file */  //同一文件的下一个未使用的文件描述符
+  int fd;                   /* File descriptor to close */
+  int flags;                /* Flags this file descriptor was opened with */
+  UnixUnusedFd *pNext;      /* Next unused file descriptor on same file */
 };
 
 /*
 ** The unixFile structure is subclass of sqlite3_file specific to the unix
 ** VFS implementations.
-** unixFile 结构体是 sqlite3_file 特定于 unix VFS 的子类实现
+**
+** uinxFile结构是unix VFS在sqlite3_file中的具体实现
 */
 typedef struct unixFile unixFile;
 struct unixFile {
-  sqlite3_io_methods const *pMethod;  /* Always the first entry */  //总是第一个进入
-  sqlite3_vfs *pVfs;                  /* The VFS that created this unixFile */  //创建这个unixFile的VFS
-  unixInodeInfo *pInode;              /* Info about locks on this inode */  //关于这个i节点上的锁的消息
-  int h;                              /* The file descriptor */ //文件描述符
-  unsigned char eFileLock;            /* The type of lock held on this fd */  //fd（上面定义的文件描述符）上加锁的类型
-  unsigned short int ctrlFlags;       /* Behavioral bits.  UNIXFILE_* flags */  //行为位
-  int lastErrno;                      /* The unix errno from last I/O error */  //最后一个输入/输出错误的unix错误
-  void *lockingContext;               /* Locking style specific state */  //加锁类型特定的状态
-  UnixUnusedFd *pUnused;              /* Pre-allocated UnixUnusedFd */  //预分配的UnixUnusedFd
-  const char *zPath;                  /* Name of the file */  //文件名
-  unixShm *pShm;                      /* Shared memory segment information */ //共享内存段的信息
-  int szChunk;                        /* Configured by FCNTL_CHUNK_SIZE */  //由 FCNTL_CHUNK_SIZE 配置
+  sqlite3_io_methods const *pMethod;  /* Always the first entry */
+  sqlite3_vfs *pVfs;                  /* The VFS that created this unixFile */
+  unixInodeInfo *pInode;              /* Info about locks on this inode */
+  int h;                              /* The file descriptor */
+  unsigned char eFileLock;            /* The type of lock held on this fd */
+  unsigned short int ctrlFlags;       /* Behavioral bits.  UNIXFILE_* flags */
+  int lastErrno;                      /* The unix errno from last I/O error */
+  void *lockingContext;               /* Locking style specific state */
+  UnixUnusedFd *pUnused;              /* Pre-allocated UnixUnusedFd */
+  const char *zPath;                  /* Name of the file */
+  unixShm *pShm;                      /* Shared memory segment information */
+  int szChunk;                        /* Configured by FCNTL_CHUNK_SIZE */
 #if SQLITE_ENABLE_LOCKING_STYLE
-  int openFlags;                      /* The flags specified at open() */ //指定的open()标志
+  int openFlags;                      /* The flags specified at open() */
 #endif
 #if SQLITE_ENABLE_LOCKING_STYLE || defined(__APPLE__)
-  unsigned fsFlags;                   /* cached details from statfs() */  //statfs() 的缓存的详细信息
+  unsigned fsFlags;                   /* cached details from statfs() */
 #endif
 #if OS_VXWORKS
-  struct vxworksFileId *pId;          /* Unique file ID */  //唯一的文件ID
+  struct vxworksFileId *pId;          /* Unique file ID */
 #endif
 #ifdef SQLITE_DEBUG
   /* The next group of variables are used to track whether or not the
@@ -264,17 +307,21 @@ struct unixFile {
   ** occur if a file is updated without also updating the transaction
   ** counter.  This test is made to avoid new problems similar to the
   ** one described by ticket #3584. 
-  **下一组变量用来跟踪数据库文件的24-27字节的事务计数器在数据库其他部分发生变化是否更新。如果一个文件
-  **更新了但没有更新事务计数器，断言故障就会发生。进行此测试，是为了避免出现新的类似于标签#3584描述的问题。
+  ** 
+  ** 接下来的一组变量用于追踪数据库文件中24-27字节处
+  ** 是否进行了程序追踪，仅发生文件更新而无事务更新
+  ** 就会出现错误。这个测试是用于避免#3584中出现的那种情况
   */
-  unsigned char transCntrChng;   /* True if the transaction counter changed */  //如果事物计数器更改则为True 
-  unsigned char dbUpdate;        /* True if any part of database file changed */  //如果数据库文件的任何部分发生了变化则为True 
-  unsigned char inNormalWrite;   /* True if in a normal write operation */  //如果在一个正常的写操作内则为True 
+  unsigned char transCntrChng;   /* True if the transaction counter changed */
+  unsigned char dbUpdate;        /* True if any part of database file changed */
+  unsigned char inNormalWrite;   /* True if in a normal write operation */
 #endif
 #ifdef SQLITE_TEST
   /* In test mode, increase the size of this structure a bit so that 
   ** it is larger than the struct CrashFile defined in test6.c.
-  ** 在测试模式下，增加一点此结构的大小，让它大于 CrashFile 在 test6.c 中定义的结构。
+  **
+  ** 在测试模型中，这个结构增加一个位都会让在test6.c中定义的
+  ** CrashFile 结构变得更大
   */
   char aPadding[32];
 #endif
@@ -282,29 +329,33 @@ struct unixFile {
 
 /*
 ** Allowed values for the unixFile.ctrlFlags bitmask:
-** unixFile.ctrlFlags位掩码允许的值 :
+**
+** 对unixFile.ctrlFlags进行设置掩码
 */
-#define UNIXFILE_EXCL        0x01     /* Connections from one process only */ //仅来自一个进程的连接
-#define UNIXFILE_RDONLY      0x02     /* Connection is read only */ //仅读连接
-#define UNIXFILE_PERSIST_WAL 0x04     /* Persistent WAL mode */ //持续的WAL模式
+#define UNIXFILE_EXCL        0x01     /* Connections from one process only */
+#define UNIXFILE_RDONLY      0x02     /* Connection is read only */
+#define UNIXFILE_PERSIST_WAL 0x04     /* Persistent WAL mode */
 #ifndef SQLITE_DISABLE_DIRSYNC
-# define UNIXFILE_DIRSYNC    0x08     /* Directory sync needed */ //所需的目录同步
+# define UNIXFILE_DIRSYNC    0x08     /* Directory sync needed */
 #else
 # define UNIXFILE_DIRSYNC    0x00
 #endif
 #define UNIXFILE_PSOW        0x10     /* SQLITE_IOCAP_POWERSAFE_OVERWRITE */
-#define UNIXFILE_DELETE      0x20     /* Delete on close */   //关闭后删除
-#define UNIXFILE_URI         0x40     /* Filename might have query parameters */  //文件名可能有查询参数
-#define UNIXFILE_NOLOCK      0x80     /* Do no file locking */  //没有文件锁定
-#define UNIXFILE_WARNED    0x0100     /* verifyDbFile() warnings have been issued */  //已发出的verifyDbFile() 警告
+#define UNIXFILE_DELETE      0x20     /* Delete on close */
+#define UNIXFILE_URI         0x40     /* Filename might have query parameters */
+#define UNIXFILE_NOLOCK      0x80     /* Do no file locking */
 
 /*
-** Include code that is common to all os_*.c files  包括了所有os_*.c文件通用的代码
+** Include code that is common to all os_*.c files
+**
+** 包含所有的os_*.c文件
 */
 #include "os_common.h"
 
 /*
-** Define various macros that are missing from some systems. 定义了许多系统都缺少的各种宏
+** Define various macros that are missing from some systems.
+**
+** 定义在一些系统中缺少的宏
 */
 #ifndef O_LARGEFILE
 # define O_LARGEFILE 0
@@ -323,7 +374,8 @@ struct unixFile {
 /*
 ** The threadid macro resolves to the thread-id or to 0.  Used for
 ** testing and debugging only.
-** threadid 宏解析到线程 id 或 0.只用于测试和调试.
+**
+** 线程宏解决线程id或0，仅用于测试或者是调试
 */
 #if SQLITE_THREADSAFE
 #define threadid pthread_self()
@@ -335,12 +387,14 @@ struct unixFile {
 ** Different Unix systems declare open() in different ways.  Same use
 ** open(const char*,int,mode_t).  Others use open(const char*,int,...).
 ** The difference is important when using a pointer to the function.
-**不同的 Unix 系统以不同的方式声明 open ()。同样使用open（ const char *，int mode_t）。
-**其他的使用open (const char *，int，......)。当使用指向函数的指针时这些区别是很重要的。
 **
 ** The safest way to deal with the problem is to always use this wrapper
 ** which always has the same well-defined interface.
-**处理这个问题最安全的方式是始终使用这个总是具有相同的定义良好的接口的封装。
+**
+** 不同的Unix系统在定义open()时采用不同的方式。有些使用
+** open(const char*, int, mode_t), 也有使用open(const char*, int,...)
+** 主要的区别在于使用指向函数的指针。
+** 最安全的方式去解决问题是使用包装器，接口定义规范.
 */
 static int posixOpen(const char *zFile, int flags, int mode){
   return open(zFile, flags, mode);
@@ -350,14 +404,16 @@ static int posixOpen(const char *zFile, int flags, int mode){
 ** On some systems, calls to fchown() will trigger a message in a security
 ** log if they come from non-root processes.  So avoid calling fchown() if
 ** we are not running as root.
-**在某些系统上，对 fchown() 的调用将触发在安全日志中的消息，如果他们来自非根进程。
-**所以，如果我们不以 root 身份运行，要避免调用 fchown()。
+** 
+** 在一些系统中，请求fchown()会触发一个安全日志信息
+** 如果来自非主进程。所以不是作为root运行时不要调
+** 用fchown()函数
 */
 static int posixFchown(int fd, uid_t uid, gid_t gid){
   return geteuid() ? 0 : fchown(fd,uid,gid);
 }
 
-/* Forward reference */ //前向引用
+/* Forward reference */
 static int openDirectory(const char*, int*);
 
 /*
@@ -365,13 +421,15 @@ static int openDirectory(const char*, int*);
 ** they may be overridden at runtime to facilitate fault injection during
 ** testing and sandboxing.  The following array holds the names and pointers
 ** to all overrideable system calls.
-**可以通过指针函数访问很多的系统调用，因为，他们可能会在运行时被重写，以便在测试时和沙盒中故障注入。
-**下面的数组保存有可重写的系统调用的名称和指针到所。
+**
+** 许多系统调用通过函数指针从而避免重写，在测试或者沙盒中
+** 出现注射故障。接下来的数组用于保存名称和被忽略的所有系
+** 调用的函数指针。
 */
 static struct unix_syscall {
-  const char *zName;            /* Name of the system call */	//系统调用名称
-  sqlite3_syscall_ptr pCurrent; /* Current value of the system call */	//系统调用的当前值
-  sqlite3_syscall_ptr pDefault; /* Default value */ 	//默认值
+  const char *zName;            /* Name of the sytem call */
+  sqlite3_syscall_ptr pCurrent; /* Current value of the system call */
+  sqlite3_syscall_ptr pDefault; /* Default value */
 } aSyscall[] = {
   { "open",         (sqlite3_syscall_ptr)posixOpen,  0  },
 #define osOpen      ((int(*)(const char*,int,int))aSyscall[0].pCurrent)
@@ -393,8 +451,10 @@ static struct unix_syscall {
 ** lacks the fcntl() system call.  So redefine fcntl() to be something
 ** that always succeeds.  This means that locking does not occur under
 ** DJGPP.  But it is DOS - what did you expect?
-**DJGPP 编译器环境看起来很像Unix，但它缺少 fcntl() 系统调用。所以重新定义 fcntl() 的时候总是会成功。
-**这意味着锁定不会出现在 DJGPP 之下。但它可以是DOS-
+**
+** DJGPP编译环境看起来最像Unix,但它缺少fcntl()系统调用，所以重定义
+** fcntl()总是会成功的。这就意味着在DJGPP中不会出现锁，但是它实际
+** 是DOS，你以为呢？
 */
 #ifdef __DJGPP__
   { "fstat",        0,                 0  },
@@ -478,20 +538,22 @@ static struct unix_syscall {
   { "umask",        (sqlite3_syscall_ptr)umask,           0 },
 #define osUmask     ((mode_t(*)(mode_t))aSyscall[21].pCurrent)
 
-}; /* End of the overrideable system calls */ 	//可重写系统调用结束
+}; /* End of the overrideable system calls */
 
 /*
 ** This is the xSetSystemCall() method of sqlite3_vfs for all of the
 ** "unix" VFSes.  Return SQLITE_OK opon successfully updating the
 ** system call pointer, or SQLITE_NOTFOUND if there is no configurable
 ** system call named zName.
-**这是sqlite3_vfs中所有"unix" VFSes的xSetSystemCall()方法。成功地更新系统调用指针并返回SQLITE_OK，
-**如果有是没有名为zName的可配置的系统调用就返回SQLITE_NOTFOUND。
+**
+** 这是sqlite3_vfs 为所有"unix"VFSes准备的xSetSystemCall方法
+** 在更新系统调用指针成功返回SQLITE_OK，如果没
+** 有配置zName则返回SQLITE_NOTFOUND
 */
 static int unixSetSystemCall(
-  sqlite3_vfs *pNotUsed,        /* The VFS pointer.  Not used */  //VFS 的指针。不使用
-  const char *zName,          /* Name of system call to override */ //系统调用重写的名称
-  sqlite3_syscall_ptr pNewFunc  /* Pointer to new system call value */  //指向新的系统调用值的指针
+  sqlite3_vfs *pNotUsed,        /* The VFS pointer.  Not used */
+  const char *zName,            /* Name of system call to override */
+  sqlite3_syscall_ptr pNewFunc  /* Pointer to new system call value */
 ){
   unsigned int i;
   int rc = SQLITE_NOTFOUND;
@@ -499,8 +561,9 @@ static int unixSetSystemCall(
   UNUSED_PARAMETER(pNotUsed);
   if( zName==0 ){
     /* If no zName is given, restore all system calls to their default
-    ** settings and return NULL.
-    ** 如果给出没有zName（系统调用的名字），所有系统调用还原为其默认设置并且返回 NULL
+    ** settings and return NULL
+    ** 
+    ** 如果没有给定zName，重新设置所有系统调用并返回空
     */
     rc = SQLITE_OK;
     for(i=0; i<sizeof(aSyscall)/sizeof(aSyscall[0]); i++){
@@ -511,7 +574,8 @@ static int unixSetSystemCall(
   }else{
     /* If zName is specified, operate on only the one system call
     ** specified.
-    ** 如果指定了zName，只能运行在一个指定的系统调用上
+    **
+    ** 如果zName给定，那么就对特定的系统调用进行操作
     */
     for(i=0; i<sizeof(aSyscall)/sizeof(aSyscall[0]); i++){
       if( strcmp(zName, aSyscall[i].zName)==0 ){
@@ -532,7 +596,9 @@ static int unixSetSystemCall(
 ** Return the value of a system call.  Return NULL if zName is not a
 ** recognized system call name.  NULL is also returned if the system call
 ** is currently undefined.
-**返回系统调用的值。如果zName不是一个被认可的系统调用名称，返回NULL。如果系统调用目前未定义也返回NULL。
+**
+** 返回系统调用的值，如果zName不是默认的系统调用名称
+** 就返回空，在zName未定义的情况下也返回空。
 */
 static sqlite3_syscall_ptr unixGetSystemCall(
   sqlite3_vfs *pNotUsed,
@@ -549,10 +615,13 @@ static sqlite3_syscall_ptr unixGetSystemCall(
 
 /*
 ** Return the name of the first system call after zName.  If zName==NULL
-** then return the name of the first system call. Return NULL if zNameis the
-** last system call or if zName is not the name of a valid system call.
-**在zName后返回的第一次系统调用的名称。如果zName==NULL，则返回第一次系统调用的名称。如果zName是最后一次的系统调用，
-**或者zName不是一个有效的系统调用的名称，请返回NULL。
+** then return the name of the first system call.  Return NULL if zName
+** is the last system call or if zName is not the name of a valid
+** system call.
+** 
+** 返回zName之后的系统调用名称，如果zName==NULL就返回第一个
+** 系统调用的名称，如果zName为空或者不是一个有效的系统调用
+** 则返回最后一个系统调用名称
 */
 static const char *unixNextSystemCall(sqlite3_vfs *p, const char *zName){
   int i = -1;
@@ -572,14 +641,11 @@ static const char *unixNextSystemCall(sqlite3_vfs *p, const char *zName){
 /*
 ** Invoke open().  Do so multiple times, until it either succeeds or
 ** fails for some reason other than EINTR.
-**调用 open ()。重复做多次，直到它不是成功就是因为EINTR以外的某种原因失败(EINTR:linux中函数的返回状态，在不同的函数中意义不同)
 **
 ** If the file creation mode "m" is 0 then set it to the default for
 ** SQLite.  The default is SQLITE_DEFAULT_FILE_PERMISSIONS (normally
 ** 0644) as modified by the system umask.  If m is not 0, then
 ** make the file creation mode be exactly m ignoring the umask.
-**如果文件的创建模式"m"为0，那么将它设置为 SQLite默认的。按系统 umask（umask:设置了用户创建文件的默认权限）
-**将默认值修改为SQLITE_DEFAULT_FILE_PERMISSIONS（通常 0644）。如果 m 不为0，然后将文件的创建模式设为完全忽略umask 的 m。
 **
 ** The m parameter will be non-zero only when creating -wal, -journal,
 ** and -shm files.  We want those files to have *exactly* the same
@@ -588,8 +654,15 @@ static const char *unixNextSystemCall(sqlite3_vfs *p, const char *zName){
 ** transaction crashes and leaves behind hot journals, then any
 ** process that is able to write to the database will also be able to
 ** recover the hot journals.
-**只有在创建后缀名为-wal、-journal和-shm 文件时，m 参数将为非零。我们希望这些文件有和他们原始的数据库“完全”相同的权限，纯粹由 umask 设置。
-**在这种方式中，如果数据库文件权限是-rw-rw-rw 或-rw-rw-r-和交易崩溃留下的热日志，则任何能写入到数据库的程序也能恢复热日志.
+**
+** 调用open(),多次进行，直到既不是成功或失败，也不同于EINTR。
+** 如果文件创建模式中"m"为0然后设置为默认值。默认的SQLITE_
+** DEFAULT_FILE_PERMISSIONS(一般为0644)作为系统掩码。如果m不是0.则将
+** 文件创建模式为-wal, -journal, -shm文件时，相关参数可以为0，我们
+** 希望创建的数据库文件拥有和原始文件相同的权限。如果数据库
+** 文件权限为-rw-rw-rw或-rw-rw-r-，同是一个原子性操作失败的时候
+** 导致热日志，然后其他可以对本数据库进行写操作的进程就可以
+** 修复这个热日志。
 */
 static int robust_open(const char *z, int f, mode_t m){
   int fd;
@@ -622,16 +695,25 @@ static int robust_open(const char *z, int f, mode_t m){
 ** global mutex is used to protect the unixInodeInfo and
 ** vxworksFileId objects used by this file, all of which may be 
 ** shared by multiple threads.
-**获得和放弃全局互斥锁的 helper 函数。全局互斥锁用于保护使用此文件中，所有的一**切都可以由多个线程共享的 unixInodeInfo 和 vxworksFileId 的对象。
 **
 ** Function unixMutexHeld() is used to assert() that the global mutex 
 ** is held when required. This function is only used as part of assert() 
 ** statements. e.g.
-**当有需要时，函数 unixMutexHeld() 用于使用全局互斥锁时所需的assert() 函数。**此函数仅用作 assert() 语句的一部分。例如：
 **
 **   unixEnterMutex()
 **     assert( unixMutexHeld() );
 **   unixEnterLeave()
+**
+** 帮助函数可以获得和释放全局互斥锁，可以用于保护
+** 本文件中使用的unixInodeInfo和vxworksFileId对象，这些都可以
+** 由多进程共享。
+**
+** 功能unixMutexHeld()使用assert()获得全局互斥锁，只能使用部分
+** assert()语句。
+**
+**	unixEnterMutex()
+**	   assert(unixMutexHeld());
+**	unixEnterLeave()
 */
 static void unixEnterMutex(void){
   sqlite3_mutex_enter(sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_MASTER));
@@ -651,7 +733,9 @@ static int unixMutexHeld(void) {
 ** Helper function for printing out trace information from debugging
 ** binaries. This returns the string represetation of the supplied
 ** integer lock-type.
-**Helper函数打印来自调试二进制文件的追踪信息。这里的返回值是提供的整型的加锁类型的字符串表示形式
+**
+** 帮助函数用于从调试数据中打印跟踪信息。
+** 返回值提供的字符串表示为整数锁类型
 */
 static const char *azFileLock(int eFileLock){
   switch( eFileLock ){
@@ -668,13 +752,15 @@ static const char *azFileLock(int eFileLock){
 #ifdef SQLITE_LOCK_TRACE
 /*
 ** Print out information about all locking operations.
-**打印出所有加锁操作的信息
 **
 ** This routine is used for troubleshooting locks on multithreaded
 ** platforms.  Enable by compiling with the -DSQLITE_LOCK_TRACE
 ** command-line option on the compiler.  This code is normally
 ** turned off.
-**这个程序用于在多线程的平台上的疑难解答锁。通过编译编译器上的-DSQLITE_LOCK_TRACE 命令行选项启用。此代码通常是关闭的。
+** 
+** 打印所有的锁信息
+** 本例程主要用于解决多线程锁问题，在编译器
+** 命令行选项上使用-DSQLITE_LOCK_TRACE，常规情况下关闭
 */
 static int lockTrace(int fd, int op, struct flock *p){
   char *zOpName, *zType;
@@ -728,7 +814,9 @@ static int lockTrace(int fd, int op, struct flock *p){
 #endif /* SQLITE_LOCK_TRACE */
 
 /*
-** Retry ftruncate() calls that fail due to EINTR    重试由于EINTR失败的ftruncate()调用
+** Retry ftruncate() calls that fail due to EINTR 
+**
+** 由于EINTR导致ftruncate()函数失败需要重试
 */
 static int robust_ftruncate(int h, sqlite3_int64 sz){
   int rc;
@@ -742,12 +830,16 @@ static int robust_ftruncate(int h, sqlite3_int64 sz){
 ** intended to translate a variety of "try again" errors into SQLITE_BUSY
 ** and a variety of "please close the file descriptor NOW" errors into 
 ** SQLITE_IOERR
-** 这个程序将标准的POSIX错误代码转化成 sqlite3 功能的客户端有用的东西。具体来说，
-** 它将被翻译成各种"重试"错误为SQLITE_BUSY 和各种"请立即关闭文件描述符"错误为SQLITE_IOERR
+** 
 ** Errors during initialization of locks, or file system support for locks,
 ** should handle ENOLCK, ENOTSUP, EOPNOTSUPP separately.
-** 锁或文件系统支持的锁的初始化期间发生的错误应分开成ENOLCK，ENOTSUP，EOPNOTSUPP来处理。
-*/ 
+**
+** 这一部分主要是将标志POSIX错误信息翻译为对sqlite3客户端
+** 有效的东西，具体地说，就是将“重试”信息翻译为“请
+** 立刻关闭文件描述符”存入SQLITE_IOERR。
+** 在初始化锁期间或者是文件系统支持的锁应该分开处理
+** ENOLCK, ENOTSUP, EOPNOTSUPP.
+*/
 static int sqliteErrorFromPosixError(int posixError, int sqliteIOErr) {
   switch (posixError) {
 #if 0
@@ -756,15 +848,11 @@ static int sqliteErrorFromPosixError(int posixError, int sqliteIOErr) {
   ** a locking-related function (i.e. fcntl()) has returned non-zero with
   ** the value of errno as the first argument. Since a system call has failed,
   ** errno should be non-zero.
-  **在一个点此代码没有注释掉。理论上讲，这一部分应该永远不会命中，因为这个函数只能在一个锁定关系函数
-  **（如 fcnt1()）返回errno的非零值作为第一个参数后被调用。由于系统调用失败，errno 应为非零值。
   **
   ** Despite this, if errno really is zero, we still don't want to return
   ** SQLITE_OK. The system call failed, and *some* SQLite error should be
   ** propagated back to the caller. Commenting this branch out means errno==0
   ** will be handled by the "default:" case below.
-  **尽管如此，如果errno真的是零,我们仍然不想返回SQLITE_OK。系统调用失败,“一些”SQLite错误应该被传回给调用者。
-  **评价这个分支意味着errno = = 0时将通过下面“默认的”情况处理。
   */
   case 0: 
     return SQLITE_OK;
@@ -776,20 +864,23 @@ static int sqliteErrorFromPosixError(int posixError, int sqliteIOErr) {
   case EINTR:
   case ENOLCK:  
     /* random NFS retry error, unless during file system support 
-     * introspection, in which it actually means what it says */
-     /*随机NFS重试错误，除非在文件系统支持自省期间,否则这实际上就意味着错误所说的内容。*/
+     * introspection, in which it actually means what it says 
+     **
+     ** NFS随机重试错误，除非文件系统支持自省，就像
+     ** 它的字面意思
+     */
     return SQLITE_BUSY;
     
   case EACCES: 
-    /* EACCES is like EAGAIN during locking operations, but not any other time*/
-    /* 在锁定操作期间EACCES就像EAGAIN，但没有任何其他时间*/
+    /* EACCES is like EAGAIN during locking operations, but not any other time
+	** EACCES在锁操作过程中就像EAGAIN，其他时候就不一样*/
     if( (sqliteIOErr == SQLITE_IOERR_LOCK) || 
         (sqliteIOErr == SQLITE_IOERR_UNLOCK) || 
         (sqliteIOErr == SQLITE_IOERR_RDLOCK) ||
         (sqliteIOErr == SQLITE_IOERR_CHECKRESERVEDLOCK) ){
       return SQLITE_BUSY;
     }
-    /* else fall through */ //其他的的失败
+    /* else fall through */
   case EPERM: 
     return SQLITE_PERM;
     
@@ -797,10 +888,14 @@ static int sqliteErrorFromPosixError(int posixError, int sqliteIOErr) {
   ** this module never makes such a call. And the code in SQLite itself 
   ** asserts that SQLITE_IOERR_BLOCKED is never returned. For these reasons
   ** this case is also commented out. If the system does set errno to EDEADLK,
-  ** the default SQLITE_IOERR_XXX code will be returned. */
-  /* 如果调用fcntl(F_SETLKW)，EDEADLK 是唯一的可能。且此模块永远不会再做这个调用。
-  并且自己的SQLite代码维护SQLITE_IOERR_BLOCKED永远不会返回。基于这些原因，这个case也被注释掉。
-  如果该系统将 errno 设置为 EDEADLK，将返回默认的 SQLITE_IOERR_XXX 代码。*/
+  ** the default SQLITE_IOERR_XXX code will be returned. 
+  **
+  ** EDEADLK是唯一可以调用fcntl(F_SETLKW)，而且从来也不会
+  ** 主动发出这样的调用，就SQLite自身的断言SQLITE_IOERR_
+  ** BLOCKED也不会返回这样的值。由于这些原因我们也需要
+  ** 注明这个情况，如果系统没有设置errno到EDEADLK，将会
+  ** 返回默认的SQLITE_IOERR_XXX代码
+  */
 #if 0
   case EDEADLK:
     return SQLITE_IOERR_BLOCKED;
@@ -809,14 +904,17 @@ static int sqliteErrorFromPosixError(int posixError, int sqliteIOErr) {
 #if EOPNOTSUPP!=ENOTSUP
   case EOPNOTSUPP: 
     /* something went terribly awry, unless during file system support 
-     * introspection, in which it actually means what it says */
-    /*出现严重失误，除非在文件系统支持自省期间，否则这实际上意味着错误所说的内容*/
+     * introspection, in which it actually means what it says 
+     ** 有时候出现可怕的错误，除非文件系统支持
+     ** 自省，就像字面上表示的那样
+     */
 #endif
 #ifdef ENOTSUP
   case ENOTSUP: 
     /* invalid fd, unless during file system support introspection, in which 
-     * it actually means what it says */
-     /*无效的fd，除非在文件系统支持自省期间，否则这实际上意味着错误所说的内容*/
+     * it actually means what it says 
+     **
+     ** fd无效，除非文件系统支持自省，就像字面表示*/
 #endif
   case EIO:
   case EBADF:
@@ -825,11 +923,15 @@ static int sqliteErrorFromPosixError(int posixError, int sqliteIOErr) {
   case ENODEV:
   case ENXIO:
   case ENOENT:
-#ifdef ESTALE                     /* ESTALE is not defined on Interix systems */ //ESTALE不是在Interix系统上定义的
+#ifdef ESTALE                     /* ESTALE is not defined on Interix systems 
+								  ** 在Interix系统中没有定义ESTALE  
+								  */
   case ESTALE:
 #endif
   case ENOSYS:
-    /* these should force the client to close the file and reconnect */   //应该强制客户端关闭该文件，然后重新连接
+    /* these should force the client to close the file and reconnect 
+	** 这些强制客户端关闭文件进行重新连接
+	*/
     
   default: 
     return sqliteIOErr;
@@ -841,56 +943,65 @@ static int sqliteErrorFromPosixError(int posixError, int sqliteIOErr) {
 /******************************************************************************
 ****************** Begin Unique File ID Utility Used By VxWorks ***************
 **
+** 				    VxWorks中使用的独特文件ID
+**
 ** On most versions of unix, we can get a unique ID for a file by concatenating
 ** the device number and the inode number.  But this does not work on VxWorks.
 ** On VxWorks, a unique file id must be based on the canonical filename.
-**对大多数版本的 unix 中，我们可以得到一个唯一的文件ID，通过串联设备数量和i节点数量。
-**但这不能用在VxWorks.在VxWorks上，一个唯一的文件 id 必须基于规范的文件名。
 **
 ** A pointer to an instance of the following structure can be used as a
 ** unique file ID in VxWorks.  Each instance of this structure contains
 ** a copy of the canonical filename.  There is also a reference count.  
 ** The structure is reclaimed when the number of pointers to it drops to
 ** zero.
-**一个指向下列结构体的一个实例指针可以用作 VxWorks 中的一个唯一的文件 ID。这种结构体的每个实例包含一份规范的文件名。
-**还有一个引用计数。当指针指向它的数目降到零时回收结构体。
 **
 ** There are never very many files open at one time and lookups are not
 ** a performance-critical path, so it is sufficient to put these
 ** structures on a linked list.
-**有很多文件从来不会打开一次，查找不是性能关键的路径，所以它足以将这些结构放在一个链表上。
+** 
+** 在大多数的unix版本下，我们可以通过连接到一个文件
+** 的唯一ID设备编号和索引节点号，但是在VxWorks上这种
+** 策略不起作用，必须使用规范的文件名获得标准ID。
+** 指向以下数据结构的指针可以作为独特的文件ID存在VxWorks
+** 中，每一个实例都包含一个规范文件名的副本。也包括一个
+** 引用计数器。这个结构 被回收的时候，指针的数量也会下降
+** 不会出现很多文件在同时被打开而查找不到一个关键路径
+** 所以将这些数据结构链接起来是高效的。
 */
 struct vxworksFileId {
-  struct vxworksFileId *pNext;  /* Next in a list of them all */		//指向链表中的下一个
-  int nRef;                     /* Number of references to this one */	//对这一引用的次数
-  int nName;               /* Length of the zCanonicalName[] string */	//zCanonicalName[]字符串的长度
-  char *zCanonicalName;         /* Canonical filename */		//规范的文件名
+  struct vxworksFileId *pNext;  /* Next in a list of them all */
+  int nRef;                     /* Number of references to this one */
+  int nName;                    /* Length of the zCanonicalName[] string */
+  char *zCanonicalName;         /* Canonical filename */
 };
 
 #if OS_VXWORKS
 /* 
 ** All unique filenames are held on a linked list headed by this
 ** variable:
+** 所有不同的文件名保存在链表中以此结构开始。
 */
 static struct vxworksFileId *vxworksFileList = 0;
 
 /*
 ** Simplify a filename into its canonical form
 ** by making the following changes:
-** 通过进行以下更改可以简化一个文件名为其规范的形式
 **
-**  *  removing any trailing and duplicate /
-**  *  convert /./ into just /
-**  *  convert /A/../ where A is any simple name into just /
-**  * 删除任何尾部的和重复的 /
-    * 将/./ 转换为 /
-    * 将/A /../ (A 只是任何简单的名称)转换成 /
+**  * removing any trailing and duplicate /
+**  * convert /./ into just /
+**  * convert /A/../ where A is any simple name into just /
 **
 ** Changes are made in-place.  Return the new name length.
-** 就地进行更改。返回新的名称长度。
+**
 ** The original filename is in z[0..n-1].  Return the number of
 ** characters in the simplified name.
-** 原来的文件名在z[0..n-1]中。返回简化的名称的字符的数目。
+**
+** 将文件名根据这些规则简化为规范格式：
+** * 移除任何附加和复制/
+** * 转换/./为/
+** * 转换/A/../A仅仅是/后的简单名称
+** 在恰当的地方做出改变，返回新名自的长度
+** 原始的文件名在z[0..n-1].返回简化后的字符数
 */
 static int vxworksSimplifyName(char *z, int n){
   int i, j;
@@ -919,19 +1030,24 @@ static int vxworksSimplifyName(char *z, int n){
 ** Find a unique file ID for the given absolute pathname.  Return
 ** a pointer to the vxworksFileId object.  This pointer is the unique
 ** file ID.
-**查找唯一的一个给定绝对路径名的文件ID。返回一个vxworksFileId 对象的指针。这个指针是唯一的文件ID。
 **
 ** The nRef field of the vxworksFileId object is incremented before
 ** the object is returned.  A new vxworksFileId object is created
 ** and added to the global list if necessary.
-**在返回对象之前VxworksFileId 对象的 nRef 字段是递增的。如有必要，创建一个新的 vxworksFileId 对象并将其添加到全局列表。
+**
 ** If a memory allocation error occurs, return NULL.
-**如果出现内存分配错误，返回 NULL
+**
+** 找到给定的绝对路径的文件ID，返回指向vxworksFileID
+** 对象的指针。这个指针拥有一个独一无二的文件ID.
+** 这个vxworksFileId对象的nRef范围需要加上此前返回对象的
+** 长度。必要的时候还需要创建一个新的vxworkFileId对象
+** 并添加到全局列表中。
+** 如果内存分配时出现了错误，返回值为空
 */
 static struct vxworksFileId *vxworksFindFileId(const char *zAbsoluteName){
-  struct vxworksFileId *pNew;         /* search key and new file ID */	//搜索键和新的文件 ID
-  struct vxworksFileId *pCandidate;   /* For looping over existing file ID*/	//用于遍历现有的文件ID
-  int n;                              /* Length of zAbsoluteName string */	// ZAbsoluteName 字符串的长度
+  struct vxworksFileId *pNew;         /* search key and new file ID */
+  struct vxworksFileId *pCandidate;   /* For looping over existing file IDs */
+  int n;                              /* Length of zAbsoluteName string */
 
   assert( zAbsoluteName[0]=='/' );
   n = (int)strlen(zAbsoluteName);
@@ -944,7 +1060,9 @@ static struct vxworksFileId *vxworksFindFileId(const char *zAbsoluteName){
   /* Search for an existing entry that matching the canonical name.
   ** If found, increment the reference count and return a pointer to
   ** the existing file ID.
-  ** 搜索现有的匹配规范名称的条目。如果发现,增加引用计数并返回一个指向现有文件ID的指针。
+  **
+  ** 搜索和标准名称匹配的现有条目，如果找到，
+  ** 增加引用计数并返回一个指向现存文件ID的指针。
   */
   unixEnterMutex();
   for(pCandidate=vxworksFileList; pCandidate; pCandidate=pCandidate->pNext){
@@ -958,7 +1076,9 @@ static struct vxworksFileId *vxworksFindFileId(const char *zAbsoluteName){
     }
   }
 
-  /* No match was found.  We will make a new file ID */ //找不到匹配的。我们将建立新的文件ID
+  /* No match was found.  We will make a new file ID 
+  ** 如果没有匹配的项目，创建一个新的文件ID
+  */
   pNew->nRef = 1;
   pNew->nName = n;
   pNew->pNext = vxworksFileList;
@@ -970,7 +1090,9 @@ static struct vxworksFileId *vxworksFindFileId(const char *zAbsoluteName){
 /*
 ** Decrement the reference count on a vxworksFileId object.  Free
 ** the object when the reference count reaches zero.
-** 减小对vxworksFileId对象的引用计数。当引用计数减至0时释放对象
+** 
+** 减少在vxworksFileId对象上面的引用计数，在计数值
+** 为0时释放这个对象
 */
 static void vxworksReleaseFileId(struct vxworksFileId *pId){
   unixEnterMutex();
@@ -993,15 +1115,14 @@ static void vxworksReleaseFileId(struct vxworksFileId *pId){
 /******************************************************************************
 *************************** Posix Advisory Locking ****************************
 **
+**                                          Posix的锁建议
+**
 ** POSIX advisory locks are broken by design.  ANSI STD 1003.1 (1996)
 ** section 6.5.2.2 lines 483 through 490 specify that when a process
 ** sets or clears a lock, that operation overrides any prior locks set
 ** by the same process.  It does not explicitly say so, but this implies
 ** that it overrides locks set by the same process using a different
 ** file descriptor.  Consider this test case:
-**POSIX咨询锁是靠设计打破的。ANSI标准1003.1(1996)部分6.5.2.2 483到490行规定，
-**当一个进程设置或者清除一个锁的时候，这个操作将会覆盖任何之前由相同进程设置的锁。
-**它并没有明确地说明，但是这意味着它将覆盖通过同一进程使用一个不同的文件描述符设置的锁。请考虑此测试用例
 **
 **       int fd1 = open("./file1", O_RDWR|O_CREAT, 0644);
 **       int fd2 = open("./file2", O_RDWR|O_CREAT, 0644);
@@ -1014,16 +1135,26 @@ static void vxworksReleaseFileId(struct vxworksFileId *pId){
 ** But not so.  Since both locks came from the same process, the
 ** second overrides the first, even though they were on different
 ** file descriptors opened on different file names.
-**假设./file1和./file2实际上是同一个文件（因为一个是硬链接或符号链接到另一个），
-**然后如果你在fd1设置排它锁,然后试图在fd2获得排它锁,它的工作原理。我预期第二锁定失败,因为由于fd1文件已经锁定。
-**但不是这样的。因为锁来自相同的进程,第二个覆盖第一个,尽管他们在不同的文件名打开的不同的文件描述符上。
+**
+** POSIX的锁建议通过设计而分开，ANSI STD 1003.1(1996)文件
+** 6.5.2.2节483行到490行规定一个进程设置或者清除一个
+** 锁的时候，操作优先于同进程的其他任何操作。
+** 虽然没有明确写明，但是表明通过不同的文件描述符
+** 实现了对文件锁的重载。考虑这个测试用例：
+**		int fd1 = open("./file1", O_RDWR|O_CREAT, 0644);
+**          int fd2 = open("./file2". O_RDWR|O_CREAT, 0644);
+** 假设./file1和./file2实际上就是同一文件(因为其中一个是
+** 硬连接或者象征性链接到其他对象)然后，如果你对
+** fd1设置独占锁，然后尝试也确实获取了fd2的独占锁，
+** 我本希望第二个操作失败，因为第一个锁已经获得、
+** 但实际上不是这样，由于两个锁来自同一个进程，
+** 所以第二个会覆盖第一个锁。虽然他们是不同的文件
+** 描述符打开的不同文件。
 **
 ** This means that we cannot use POSIX locks to synchronize file access
 ** among competing threads of the same process.  POSIX locks will work fine
 ** to synchronize access for threads in separate processes, but not
 ** threads within the same process.
-**这意味着我们不能使用 POSIX 锁来同步竞争同一进程的线程之间的文件访问。POSIX锁可以同步不同进程的线程的访问，
-**但不能同步同一进程的线程访问。
 **
 ** To work around the problem, SQLite has to manage file locks internally
 ** on its own.  Whenever a new database is opened, we have to find the
@@ -1033,14 +1164,23 @@ static void vxworksReleaseFileId(struct vxworksFileId *pId){
 ** created or removed, we have to look at our own internal record of the
 ** locks to see if another thread has previously set a lock on that same
 ** inode.
-**若想解决这一问题，SQLite必须在其内部管理文件锁定。每当打开一个新的数据库,我们必须找到特定的数据库文件的
-**i节点（这个i节点由st_dev和st_ino字段的统计结构的fstat()函数填写），并且检查这个锁已经存在在这个i节点上了。
-**当创建或删除锁，我们要看看我们自己内部的锁记录，看是否有另一个线程先在相同的i节点上设置了锁。
 **
 ** (Aside: The use of inode numbers as unique IDs does not work on VxWorks.
 ** For VxWorks, we have to use the alternative unique ID system based on
 ** canonical filename and implemented in the previous division.)
-**顺便说句：不能在VxWorks上使用i节点编号作为唯一的ID。对于VxWorks，我们必须使用基于规范的文件名，并且在原先的部分实施.
+**
+** 这意味着我们不能使用POSIX锁在同一进程的竞争线程间
+** 实现同步文件。POSIX锁在不同进程间实现文件同步是比
+** 较好的方法。但是不能在同一进程的不同线程中使用。
+**
+** 为了解决这个问题，SQLite在内部实现了自己的文件锁，
+** 无论何时一个新的数据库被打开，我们需要找到对应的
+** 文件索引节点(是由fstat()在文件初始st_dev和st_ino域包括的inode
+** 统计结果）同时检查已存在的索引节点锁。当锁被创建
+** 或者移除的时候，我们需要查看锁的内部记录，是否有
+** 其他的线程已经设置了同样的inode，
+**（旁白：iNode编号作为文件的标识在VxWorks上不起作用，我们
+** 需要基于典型的文件名和此前的划分实现可取的ID系统。
 **
 ** The sqlite3_file structure for POSIX is no longer just an integer file
 ** descriptor.  It is now a structure that holds the integer file
@@ -1052,20 +1192,23 @@ static void vxworksReleaseFileId(struct vxworksFileId *pId){
 ** field that tells us its internal lock status.  cnt==0 means the
 ** file is unlocked.  cnt==-1 means the file has an exclusive lock.
 ** cnt>0 means there are cnt shared locks on the file.
-** POSIX的sqlite3_file结构不再仅仅是一个整型的文件描述符。它现在是一个包含整型的文件描述符和指向描述内部相应的
-** i节点上的锁的结构的指针。每个i节点有一个锁结构，所以如果同一个inode打开两次, 两个unixFile结构指向同一个锁结构。
-** 锁定结构保持引用计数(因此,我们将知道什么时候删除它)并且“cnt”字段告诉我们其内部锁状态。
-** cnt==0意味着文件没有加锁。cnt=-1意味着文件上有一个排它锁。cnt>0意味着该文件上有cnt共享锁。
 **
 ** Any attempt to lock or unlock a file first checks the locking
 ** structure.  The fcntl() system call is only invoked to set a 
 ** POSIX lock if the internal lock structure transitions between
 ** a locked and an unlocked state.
-**任何企图要锁定或解锁文件首先检查锁结构。如果内部锁结构在锁定和解除锁定的状态之间转换，
-**才会调用 fcntl() 系统调用设置 POSIX 锁。
-
+**
 ** But wait:  there are yet more problems with POSIX advisory locks.
-** POSIX 咨询锁还是存在一些问题
+**
+** POSIX中sqlite3_file结构不再仅仅是一个整数文件描述符，现在
+** 是一个包含有文件描述符和指向内部iNode结构的指针。对
+** 用于每一个iNode结构有一个锁定结构，如果同一个iNode 被
+** 两次打开，两个unixFile对象都会指向同一个锁结构。所以
+** 必须要保持一个引用计数对象（这样我们就知道什么时候
+** 对它进行释放）和一个"cnt"字段表示锁定的状态。为0表示
+** 文件没有被锁住，大于0表示文件上有cnt锁。
+** 任何尝试锁住或者对文件解锁的操作首先都要检查文件的
+** 锁结构，系统调用fcntl()只是在POSIX锁内部进行状态的转换。
 **
 ** If you close a file descriptor that points to a file that has locks,
 ** all locks on that file that are owned by the current process are
@@ -1077,13 +1220,8 @@ static void vxworksReleaseFileId(struct vxworksFileId *pId){
 ** The unixInodeInfo structure keeps a list of file descriptors that need to
 ** be closed and that list is walked (and cleared) when the last lock
 ** clears.
-** 如果你关闭一个指向已锁定的文件的文件描述符，由当前进程对该文件的设置的所有锁都会释放。
-** 为了解决这个问题，每个 unixInodeInfo 对象维护在该i节点上挂起的锁的数目的计数。
-** 当试图关闭一个unixFile,如果在在该持有锁的i节点上有其他unixFile打开，close()关闭文件描述符的调用将推迟，
-** 直到所有的锁都清除。unixInodeInfo结构体保存一个需要关闭的文件描述符列表,并且最后一个锁清除时该列表也将移除（清除）。
 **
 ** Yet another problem:  LinuxThreads do not play well with posix locks.
-**另外一个问题：LinuxThreads不能与posix locks很好地工作
 **
 ** Many older versions of linux use the LinuxThreads library which is
 ** not posix compliant.  Under LinuxThreads, a lock created by thread
@@ -1096,31 +1234,44 @@ static void vxworksReleaseFileId(struct vxworksFileId *pId){
 ** compile-time whether or not thread A can override locks on thread B.
 ** One has to do a run-time check to discover the behavior of the
 ** current process.
-** 许多旧版本的linux使用LinuxThreads库是不兼容posix的。在LinuxThreads下，线程A创建的锁不能由线程B修改或者重写。
-** 只有线程A可以修改这个锁。如果应用程序在Linux上使用新的本机Posix线程库（NPTL），锁定行为是正确的，
-** 使用NPTL线程A创建的锁可以重写线程B中的锁。但是没有办法知道在编译时使用的是哪一种线程库。
-** 所以没有办法知道在编译时线程A是否可以重写线程B上的锁。必需在运行时检查发现当前进程的行为。
+**
+** 如果你关闭了一个有锁的指向文件描述符，当前进程拥有的
+** 所有锁都会被释放。为了解决这个问题，不同的unixInoeInfo对象
+** 保持在iNode上的pending锁计数。在尝试关闭unixFile时，如果其他的
+** unixFile在打开同一个文件且含有锁时，这个文件描述符关闭操作
+** 就会被推迟到所有的文件锁都被清除.unixInodeInfo结构保持文件描
+** 述符列表，在最后一个锁被销毁时，列表关闭。
+** 然而还有一个问题：Linux线程在POSIX锁下运行效果不好。
+** 许多Linux旧版本使用Linux线程库并不支持POSIX，在Linux线程中，一
+** 个线程创建的锁不能被其他的线程修改或者改写。只有创建的
+** 线程才能修改这个锁，如果应用遵循NPTL原则则锁定是安全的
+** 由线程A创建的锁可以覆盖线程B创建的锁。但是在编译时无法获知
+** 当前使用的线程库，所以无法知道编译后线程A 可以重载线程B的锁
+** 我们必须进行运行时检查当前进程行为的正确性
 **
 ** SQLite used to support LinuxThreads.  But support for LinuxThreads
 ** was dropped beginning with version 3.7.0.  SQLite will still work with
 ** LinuxThreads provided that (1) there is no more than one connection 
 ** per database file in the same process and (2) database connections
 ** do not move across threads.
-** SQLite过去支持Linux线程。但从3.7.0版本开始就删除了对Linux线程的支持,SQLite 只规定
-** (1)在同一进程中每个数据库文件没有超过一个以上的连接,并且(2)数据库连接不会跨线程移动的情况下，仍然会与以支持。 
+** 
+** SQLite曾经支持Linux线程库但是从3.7.0版本开始不再支持。SQLite将会继续
+** 使用Linux线程库的服务（1）同一个进程中不会超过一个连接（2）数
+** 据库连接不会穿越线程
 */
 
 /*
 ** An instance of the following structure serves as the key used
 ** to locate a particular unixInodeInfo object.
-** 以下结构体的一个实例用于查找一个特定的 unixInodeInfo 对象的键。
+**
+** 下列实例作为特定unixInodeInfo对象的密钥
 */
 struct unixFileId {
-  dev_t dev;                  /* Device number */		//设备号
+  dev_t dev;                  /* Device number */
 #if OS_VXWORKS
-  struct vxworksFileId *pId;  /* Unique file ID for vxworks. */	//用于 vxworks 的唯一的文件 ID
+  struct vxworksFileId *pId;  /* Unique file ID for vxworks. */
 #else
-  ino_t ino;                  /* Inode number */		//i节点数目
+  ino_t ino;                  /* Inode number */
 #endif
 };
 
@@ -1128,36 +1279,39 @@ struct unixFileId {
 ** An instance of the following structure is allocated for each open
 ** inode.  Or, on LinuxThreads, there is one of these structures for
 ** each inode opened by each thread.
-** 下面结构体的一个实例分配给每个打开的i节点。或者，在Linux线程中，这些结构体中有一个是给由线程打开的i节点的。
 **
 ** A single inode can have multiple file descriptors, so each unixFile
 ** structure contains a pointer to an instance of this object and this
 ** object keeps a count of the number of unixFile pointing to it.
-** 单一的i节点可以有多个文件描述符，因此每个 unixFile 结构包含一个指针，指向该对象的一个实例，
-** 此对象保持 unixFile 指向它的数目的计数。
+**
+** 为每一个iNode分配实例或者在Linux线程中，这些结构
+** 都是为iNode和线程对应。
+** 单个iNode可以拥有多个文件描述符，所以每个unixFile
+** 结构包括指向这个实例的指针，同时保持着unixFile
+** 指向他的计数器。
 */
 struct unixInodeInfo {
-  struct unixFileId fileId;       /* The lookup key */	//查找键
-  int nShared;                    /* Number of SHARED locks held */	//持有共享锁的数目
+  struct unixFileId fileId;       /* The lookup key */
+  int nShared;                    /* Number of SHARED locks held */
   unsigned char eFileLock;        /* One of SHARED_LOCK, RESERVED_LOCK etc. */
-  unsigned char bProcessLock;     /* An exclusive process lock is held */	//独占进程锁
-  int nRef;                       /* Number of pointers to this structure */	//指向这个结构体的指针数目
-  unixShmNode *pShmNode;          /* Shared memory associated with this inode */	//与这个i节点有关的共享内存
-  int nLock;                      /* Number of outstanding file locks */  //未完成的文件锁定的数目
-  UnixUnusedFd  *pUnused;         /* Unused file descriptors to close */	//关闭未使用的文件描述符
-  unixInodeInfo *pNext;           /* List of all unixInodeInfo objects */	//所有的 unixInodeInfo 对象的列表
-  unixInodeInfo *pPrev;           /*    .... doubly linked */	//双重链接
+  unsigned char bProcessLock;     /* An exclusive process lock is held */
+  int nRef;                       /* Number of pointers to this structure */
+  unixShmNode *pShmNode;          /* Shared memory associated with this inode */
+  int nLock;                      /* Number of outstanding file locks */
+  UnixUnusedFd *pUnused;          /* Unused file descriptors to close */
+  unixInodeInfo *pNext;           /* List of all unixInodeInfo objects */
+  unixInodeInfo *pPrev;           /*    .... doubly linked */
 #if SQLITE_ENABLE_LOCKING_STYLE
-  unsigned long long sharedByte;  /* for AFP simulated shared lock */	//用于模拟APF共享锁
+  unsigned long long sharedByte;  /* for AFP simulated shared lock */
 #endif
 #if OS_VXWORKS
-  sem_t *pSem;                    /* Named POSIX semaphore */	//命名的 POSIX 信号量
-  char aSemName[MAX_PATHNAME+2];  /* Name of that semaphore */	//该信号量的名称
+  sem_t *pSem;                    /* Named POSIX semaphore */
+  char aSemName[MAX_PATHNAME+2];  /* Name of that semaphore */
 #endif
 };
 
 /*
-** A lists of all unixInodeInfo objects.  UnixInodeInfo 的所有对象的列表
+** A lists of all unixInodeInfo objects. 所有unixInodeInfo对象列表
 */
 static unixInodeInfo *inodeList = 0;
 
@@ -1165,38 +1319,42 @@ static unixInodeInfo *inodeList = 0;
 **
 ** This function - unixLogError_x(), is only ever called via the macro
 ** unixLogError().
-**这个unixLogError_x()函数永远只能通过宏定义的unixLogError()函数调用
 **
 ** It is invoked after an error occurs in an OS function and errno has been
 ** set. It logs a message using sqlite3_log() containing the current value of
 ** errno and, if possible, the human-readable equivalent from strerror() or
 ** strerror_r().
-**在操作系统函数出现错误并且错误被设定之后调用它。它使用sqlite3_log()记录一条消息，消息包含当前errno的值，
-**如果可能，认可读的等效来自于strerror() or strerror_r()
 **
 ** The first argument passed to the macro should be the error code that
 ** will be returned to SQLite (e.g. SQLITE_IOERR_DELETE, SQLITE_CANTOPEN). 
 ** The two subsequent arguments should be the name of the OS function that
 ** failed (e.g. "unlink", "open") and the associated file-system path,
 ** if any.
-**传递给宏的第一个参数应是将被返回到SQLite的（例如SQLITE_IOERR_DELETE，SQLITE_CANTOPEN）错误代码。
-**随后的两个参数应该是失败的操作系统函数名称（例如"取消链接"，"打开"），以及相关的系统文件路径。
+**
+** unixLogError_x()方法仅仅是通过调用unixLogError()宏，
+** 这些调用主要是在操作系统层出现错误后进行，
+** 使用sqlite3_log()记录当前错误值，在需要的时候，从
+** strerror()或strerror_r()获得人类可以阅读的信息。
+** 传递给宏的第一个参数应该是SQLite返回的错误代码，
+** （SQLITE_IOERR_DELETE, SQLITE_CANTOPEN）接下来的两个参数
+** 应该是操作系统的函数失败时的名称和相关路径。
 */
 #define unixLogError(a,b,c)     unixLogErrorAtLine(a,b,c,__LINE__)
 static int unixLogErrorAtLine(
-  int errcode,                    /* SQLite error code */   //SQLite错误代码
-  const char *zFunc,              /* Name of OS function that failed */   //失败的操作系统函数名称
-  const char *zPath,              /* File path associated with error */ //错误的文件路径关联
-  int iLine                       /* Source line number where error occurred */ //发生错误的位置的源代码行号
+  int errcode,                    /* SQLite error code */
+  const char *zFunc,              /* Name of OS function that failed */
+  const char *zPath,              /* File path associated with error */
+  int iLine                       /* Source line number where error occurred */
 ){
-  char *zErr;                     /* Message from strerror() or equivalent */ ///strerror()的或与之等效的消息
-  int iErrno = errno;             /* Saved syscall error number */    //保存系统调用错误号
+  char *zErr;                     /* Message from strerror() or equivalent */
+  int iErrno = errno;             /* Saved syscall error number */
 
   /* If this is not a threadsafe build (SQLITE_THREADSAFE==0), then use
   ** the strerror() function to obtain the human-readable error message
   ** equivalent to errno. Otherwise, use strerror_r().
-  **如果这不是一个线程安全构建(SQLITE_THREADSAFE == 0),则使用strerror()函数来获得相当于errno的人可读的错误消息。
-  **否则,使用strerror_r()。
+  **
+  ** 如果这个不是线程安全(SQLITE_THREADSAFE==0)，然后使用strerror()函数
+  ** 得到可读的错误信息，或者使用strerror_r().
   */ 
 #if SQLITE_THREADSAFE && defined(HAVE_STRERROR_R)
   char aErr[80];
@@ -1209,16 +1367,20 @@ static int unixLogErrorAtLine(
   ** may point to aErr[], or it may point to some static storage somewhere. 
   ** Otherwise, assume that the system provides the POSIX version of 
   ** strerror_r(), which always writes an error message into aErr[].
-  **如果定义了STRERROR_R_CHAR_P（由 autoconf 脚本设置）或 __USE_GNU，
-  **假定该系统提供的 GNU 版本的 strerror_r()它返回一个指向包含错误消息的缓冲区。这个指针可以指向aErr[]，
-  **或者指向一些静态存储区域。否则，假设该系统提供的 POSIX 版本的 strerror_r()，总是将错误消息写入到 aErr []。
   **
   ** If the code incorrectly assumes that it is the POSIX version that is
   ** available, the error message will often be an empty string. Not a
   ** huge problem. Incorrectly concluding that the GNU version is available 
   ** could lead to a segfault though.
-  **如果代码错误地假定它是可用的 POSIX 版本，错误消息通常会是一个空字符串。这不是一个大问题。
-  **虽然不正确地结束 GNU 版本可用可能导致分段错误。
+  ** 
+  ** 如果STRERROR_R_CHAR_P(由脚本自动创建）或_USE_GNU定义，
+  ** 假设系统提供GNU版本的strerror_r()返回一个指向存放错误
+  ** 信息的缓冲区指针，该指针可能指向aErr[]。或者指向
+  ** 一个静态存储的区域，否则，假设系统提供的POSIX strerror_()
+  ** 版本，总是写一个错误信息到aErr[],
+  ** 如果一个代码假设POSIX版本是可用的，错误信息就是空字符串，
+  ** 不是一个大问题，错误的认为gnu版本可用，才是大问题
+  ** 
   */
 #if defined(STRERROR_R_CHAR_P) || defined(__USE_GNU)
   zErr = 
@@ -1226,10 +1388,10 @@ static int unixLogErrorAtLine(
   strerror_r(iErrno, aErr, sizeof(aErr)-1);
 
 #elif SQLITE_THREADSAFE
-  /* This is a threadsafe build, but strerror_r() is not available. *///这是一个线程安全的构建，但是strerror_r()是不可用的
+  /* This is a threadsafe build, but strerror_r() is not available. */
   zErr = "";
 #else
-  /* Non-threadsafe build, use strerror(). */ //非线程安全的构建，使用strerror()
+  /* Non-threadsafe build, use strerror(). */
   zErr = strerror(iErrno);
 #endif
 
@@ -1245,21 +1407,25 @@ static int unixLogErrorAtLine(
 
 /*
 ** Close a file descriptor.
-**关闭一个文件描述符
 **
 ** We assume that close() almost always works, since it is only in a
 ** very sick application or on a very sick platform that it might fail.
 ** If it does fail, simply leak the file descriptor, but do log the
 ** error.
-**因为只在一个非常恶心的应用程序或在一个非常恶心的平台,它可能会失败，**我们假设close()几乎总是工作的。如果它失败了,除了记录错误之外，仅仅**泄漏文件描述符。
 **
 ** Note that it is not safe to retry close() after EINTR since the
 ** file descriptor might have already been reused by another thread.
 ** So we don't even try to recover from an EINTR.  Just log the error
 ** and move on.
 **
-**需要注意的是，由于文件描述符可能已经被另一个线程重新使用，在EINTR
-**后重试close（）是不安全的。所以，我们甚至不尝试从EINTR恢复。只要记**录错误然后继续执行
+** 关闭文件描述符
+** 我们假设close()一般情况下都可行，除非是运行在一个非常差
+** 的应用或是平台才会导致错误。如果出错，导致文件泄露
+** 也是会在log文件中记录。
+** 注意，在EINTR之后再次尝试关闭文件是不安全的，这是因为
+** 文件描述符可能已经被另一个线程占用。所有我们不需要
+** 从EINTR中尝试再次关闭文件，只需要进行错误日志记录继续
+** 就可以了
 */
 static void robust_close(unixFile *pFile, int h, int lineno){
   if( osClose(h) ){
@@ -1270,7 +1436,7 @@ static void robust_close(unixFile *pFile, int h, int lineno){
 
 /*
 ** Close all file descriptors accumuated in the unixInodeInfo->pUnused list.
-**关闭所有存放在unixInodeInfo->pUnused列表中的文件描述符
+** 关闭unixInodeInfo->pUnused中所有的文件描述符列表
 */ 
 static void closePendingFds(unixFile *pFile){
   unixInodeInfo *pInode = pFile->pInode;
@@ -1286,11 +1452,12 @@ static void closePendingFds(unixFile *pFile){
 
 /*
 ** Release a unixInodeInfo structure previously allocated by findInodeInfo().
-**释放之前findInodeInfo()分配的一个unixInodeInfo结构
 **
 ** The mutex entered using the unixEnterMutex() function must be held
 ** when this function is called.
-**当这个函数被调用时，必须使用unixEnterMutex（）函数输入的互斥量
+**
+**  释放此前由findInodeInfo()分配的unixInodeInfo对象，
+** 在unixEnterMutex()函数调用时必须保持mutex
 */
 static void releaseInodeInfo(unixFile *pFile){
   unixInodeInfo *pInode = pFile->pInode;
@@ -1320,30 +1487,33 @@ static void releaseInodeInfo(unixFile *pFile){
 ** Given a file descriptor, locate the unixInodeInfo object that
 ** describes that file descriptor.  Create a new one if necessary.  The
 ** return value might be uninitialized if an error occurs.
-** 给定一个文件描述符,定位unixInodeInfo对象描述文件描述符。在必要时创建一个新的。如果出现错误,返回值可能是未初始化的。
 **
 ** The mutex entered using the unixEnterMutex() function must be held
 ** when this function is called.
-**当这个函数被调用时，必须使用unixEnterMutex（）函数输入的互斥量
 **
 ** Return an appropriate error code.
-**返回相应的错误代码
+**
+** 对于给定的文件描述符，定位描述unixInodeInfo对象的具体位置，
+** 必须的时候创建新对象。出现错误的时候返回值可能是随机值
+** 互斥进入unixEnterMutex()函数时被调用。
+** 返回值是一个恰当的错误代码
 */
 static int findInodeInfo(
-  unixFile *pFile,               /* Unix file with file desc used in the key */ //降序排列的Unix文件使用的键
-  unixInodeInfo **ppInode        /* Return the unixInodeInfo object here */ //返回unixInodeInfo对象
+  unixFile *pFile,               /* Unix file with file desc used in the key */
+  unixInodeInfo **ppInode        /* Return the unixInodeInfo object here */
 ){
-  int rc;                        /* System call return code */    //系统调用返回代码
-  int fd;                        /* The file descriptor for pFile */    //pFile的文件描述符
-  struct unixFileId fileId;      /* Lookup key for the unixInodeInfo */ //unixInodeInfo的查找键
-  struct stat statbuf;           /* Low-level file information */ //底层文件信息
-  unixInodeInfo *pInode = 0;     /* Candidate unixInodeInfo object */ //候选的unixInodeInfo对象
+  int rc;                        /* System call return code */
+  int fd;                        /* The file descriptor for pFile */
+  struct unixFileId fileId;      /* Lookup key for the unixInodeInfo */
+  struct stat statbuf;           /* Low-level file information */
+  unixInodeInfo *pInode = 0;     /* Candidate unixInodeInfo object */
 
   assert( unixMutexHeld() );
 
   /* Get low-level information about the file that we can used to
   ** create a unique name for the file.
-  **获得底层文件信息,我们可以用来为该文件创建一个唯一的名称。
+  **
+  ** 获得我们用来创建独特名称文件的低等级信息
   */
   fd = pFile->h;
   rc = osFstat(fd, &statbuf);
@@ -1365,10 +1535,14 @@ static int findInodeInfo(
   ** in the header of every SQLite database.  In this way, if there
   ** is a race condition such that another thread has already populated
   ** the first page of the database, no damage is done.
-  **在os x系统的msdos文件系统中,对于大小为0的文件,i节点会报错.见标签#3260.
-  **为了解决这个问题(这是OS X系统的一个bug,而不是SQLite的问题),我们将写入一个字节到i节点中使得文件大小增加1.
-  **这个字节写入一个ASCII 字符S，在每个SQLite数据库中文件头的第一个字节也会这样处理。通过这种方式，
-  **如果出现多个进程进行竞争,如果其中一个进程已经占用了数据库的第一个页面,其他进程就会识别而不会对数据库造成破坏.
+  **
+  ** 在OS X的msdos文件系统上，对于比零大的iNode编号实际上
+  ** 存在错误，详见#3260，为了解决这个问题（我们假设它是
+  ** OS X上的一个bug，而不是来自SQLite)在访问对于iNode编号前，
+  ** 我们总是通过写一个字节把文件的大小增加到1。字符"S"
+  ** 也恰好是每个SQLite数据库头文件中的第一个字符。通过这种
+  ** 方法，如果有一种类别条件，例如另外一个进程已经填充了
+  ** 数据库的第一页，而没有造成损坏。
   */
   if( statbuf.st_size==0 && (pFile->fsFlags & SQLITE_FSFLAGS_IS_MSDOS)!=0 ){
     do{ rc = osWrite(fd, "S", 1); }while( rc<0 && errno==EINTR );
@@ -1420,8 +1594,10 @@ static int findInodeInfo(
 ** file by this or any other process. If such a lock is held, set *pResOut
 ** to a non-zero value otherwise *pResOut is set to zero.  The return value
 ** is set to SQLITE_OK unless an I/O error occurs during lock checking.
-**这个例程检查这个进程或其他进程指定的文件是否持有保留锁。如果持有这样的锁，
-**设置*pResOut为非零值，否则设置为0.返回值设置为SQLITE_OK，除非在锁定检查期间出现I/O错误。
+**
+** 主要是用于检查特定文件中被本进程或其他进程获得的预留锁
+** 如果持有这样的锁，设置*pResOut为非0值否则设置为0.返回值为
+** SQLITE_OK除非在锁检查时发生了错误。
 */
 static int unixCheckReservedLock(sqlite3_file *id, int *pResOut){
   int rc = SQLITE_OK;
@@ -1431,15 +1607,14 @@ static int unixCheckReservedLock(sqlite3_file *id, int *pResOut){
   SimulateIOError( return SQLITE_IOERR_CHECKRESERVEDLOCK; );
 
   assert( pFile );
-  unixEnterMutex(); /* Because pFile->pInode is shared across threads */  //因为pFile->pInode在线程间是共享的
+  unixEnterMutex(); /* Because pFile->pInode is shared across threads */
 
-  /* Check if a thread in this process holds such a lock */	//检查是否这一进程中的线程持有此类锁
+  /* Check if a thread in this process holds such a lock */
   if( pFile->pInode->eFileLock>SHARED_LOCK ){
     reserved = 1;
   }
 
   /* Otherwise see if some other process holds it.
-  ** 否则，看看是否一些其他进程持有它。
   */
 #ifndef __DJGPP__
   if( !reserved && !pFile->pInode->bProcessLock ){
@@ -1467,7 +1642,6 @@ static int unixCheckReservedLock(sqlite3_file *id, int *pResOut){
 /*
 ** Attempt to set a system-lock on the file pFile.  The lock is 
 ** described by pLock.
-**试图在文件pFile设置一个系统锁，这个锁由pLock描述。
 **
 ** If the pFile was opened read/write from unix-excl, then the only lock
 ** ever obtained is an exclusive lock, and it is obtained exactly once
@@ -1476,18 +1650,24 @@ static int unixCheckReservedLock(sqlite3_file *id, int *pResOut){
 ** in order to coordinate access between separate database connections
 ** within this process, but all of that is handled in memory and the
 ** operating system does not participate.
-**如果pFile是从unix-excl打开读/写的,那么只有曾经获得的排它锁,这是第一次获得试图得到的任何的锁。
-**所有后续系统锁定操作成为空操作。锁定操作仍然发生在内部,以便协调在这一进程内的单独的数据库连接之间的访问，
-**但这一切都是在内存中处理，操作系统并不参与。
 **
 ** This function is a pass-through to fcntl(F_SETLK) if pFile is using
 ** any VFS other than "unix-excl" or if pFile is opened on "unix-excl"
 ** and is read-only.
-**这个函数传递到fcntl(F_SETLK)如果pFile使用了除了"unix-excl"之外的任何VFS，或者pFile 在"unix-excl"上是打开的并且是只读的。
 **
 ** Zero is returned if the call completes successfully, or -1 if a call
 ** to fcntl() fails. In this case, errno is set appropriately (by fcntl()).
-**如果调用成功完成，返回零，或-1，如果调用fcntl()失败。在这种情况下，errno是设置正确(通过fcntl())。
+**
+** 在pFile文件上尝试设置一个系统文件锁，使用pLock描述
+** 如果pFile由unix-excl读/写,然后获得唯一锁就是独占锁，也
+** 只会在每个锁第一次尝试的时候获得，所有后续的系统
+** 锁操作都只会变得无意义，锁操作仍然发生在文件内部
+** 为了在本进程中获得分离的数据库访问接口，但是这些
+** 都需要在内存中进行，操作系统不参与其中。
+** 如果pFile使用除了"unix-excl"之外的VFS是通过fcntl实现的。如果
+** pFile是基于"unix-excl"的话，他就是只读的。
+** 如果调用成功返回值为0，调用fcntl()失败返回1，在这种情况下，
+** errno就要被正确的设置（由fcntl()设置）
 */
 static int unixFileLock(unixFile *pFile, struct flock *pLock){
   int rc;
@@ -1518,33 +1698,49 @@ static int unixFileLock(unixFile *pFile, struct flock *pLock){
 }
 
 /*
-** Lock the file with the lock specified by parameter eFileLock - one	
+** Lock the file with the lock specified by parameter eFileLock - one
 ** of the following:
-**对文件进行由参数eFileLock指定的下列加锁
 **
-**     (1) SHARED_LOCK 共享锁
-**     (2) RESERVED_LOCK保留锁
-**     (3) PENDING_LOCK未决锁
-**     (4) EXCLUSIVE_LOCK排它锁
+**     (1) SHARED_LOCK
+**     (2) RESERVED_LOCK
+**     (3) PENDING_LOCK
+**     (4) EXCLUSIVE_LOCK
+** 根据以下的锁实现并行处理，主要有以下的：
+**     （1）共享锁
+**     （2）预订锁
+**     （3）意向锁
+**     （4）独占锁
 **
 ** Sometimes when requesting one lock state, additional lock states
 ** are inserted in between.  The locking might fail on one of the later
 ** transitions leaving the lock state different from what it started but
 ** still short of its goal.  The following chart shows the allowed
 ** transitions and the inserted intermediate states:
-**有时，请求一个锁定状态时，会插入额外的锁定状态。之后的转换让锁的状态不同于它开始的状态，锁定可能失败，达不到预期的目标。
-**下面的图表显示了允许的转换和插入的中间状态
 **
-**    UNLOCKED -> SHARED 未加锁->共享
-**    SHARED -> RESERVED  共享->保留
-**    SHARED -> (PENDING) -> EXCLUSIVE 共享->（未决）->排它
-**    RESERVED -> (PENDING) -> EXCLUSIVE 保留->（未决）->排它
-**    PENDING -> EXCLUSIVE 未决->排它
+** 有时在请求一个锁定是，在锁定状态确定的中间阶段
+** 由于之后一个锁的状态不同导致失败，没有到达预期
+** 结果，下面的表格显示了允许的转换和插入状态：
+**
+**    UNLOCKED -> SHARED
+**    SHARED -> RESERVED
+**    SHARED -> (PENDING) -> EXCLUSIVE
+**    RESERVED -> (PENDING) -> EXCLUSIVE
+**    PENDING -> EXCLUSIVE
+**
+** 解锁-> 共享
+** 共享-> 保留
+** 共享->（待定)->独占
+** 保留->(待定)->独占
+** 挂起-> 独占
 **
 ** This routine will only increase a lock.  Use the sqlite3OsUnlock()
 ** routine to lower a locking level.
-** 这个程序只会增加锁。使用sqlite3OsUnlock()程序以降低锁定级别。
+** 
+** 这个路线只会增加一个锁，winUnlock()函数会立即清除
+** 所有的锁给我们返回0级，我们不可能逐步降低锁
+** 你必须一次性锁定为0级
 */
+
 static int unixLock(sqlite3_file *id, int eFileLock){
   /* The following describes the implementation of the various locks and
   ** lock transitions in terms of the POSIX advisory shared and exclusive
@@ -1552,25 +1748,28 @@ static int unixLock(sqlite3_file *id, int eFileLock){
   ** confusion with SQLite lock names). The algorithms are complicated
   ** slightly in order to be compatible with windows systems simultaneously
   ** accessing the same database file, in case that is ever required.
-  **下面描述了各种锁的执行和锁在POSIX咨询共享锁和排它锁之间转换的原语(以下称为读锁和写锁，以避免混淆SQLite的锁名称)。
-  **算法略显复杂，以便兼容与windows系统同时访问同一数据库文件，如果有需要的话。
   **
   ** Symbols defined in os.h indentify the 'pending byte' and the 'reserved
   ** byte', each single bytes at well known offsets, and the 'shared byte
   ** range', a range of 510 bytes at a well known offset.
-  **在os.h中定义的符号识别 'pending byte' and the 'reserved byte'，每个字节在总所周知的偏移处，
-  **'shared byte range'在总所周知的偏移处的510个字节范围内。
   **
   ** To obtain a SHARED lock, a read-lock is obtained on the 'pending
   ** byte'.  If this is successful, a random byte from the 'shared byte
   ** range' is read-locked and the lock on the 'pending byte' released.
-  **为了获得共享锁，要在'pending byte'获得读锁。如果成功了，从'shared byte range' 得到的一个随机字节读锁定，
-  **并且'pending byte' 上的锁移除。
+  **
+  ** 下面主要介绍各种锁的实现和POSIX中各种锁的转换，
+  ** 共享锁和独占锁原子（接下来称之为读锁和写锁，
+  ** 从而避免和SQLite锁名称混淆），这个算法有一些复杂，
+  ** 主要是为了和Windows系统兼容，需要时访问同一个数据库。
+  ** 符号主要是在os.h文件中定义”pending字节“和”保留的字节“
+  ** 每一个字节都有偏移量，和共享内存范围，“主要有
+  ** 510字节的偏移范围。
+  ** 为了获得共享锁，需要在挂起字节中获得读锁，如果有效，
+  ** 就会在共享字节区域获得一个字节，进行读锁定和释放。
   **
   ** A process may only obtain a RESERVED lock after it has a SHARED lock.
   ** A RESERVED lock is implemented by grabbing a write-lock on the
   ** 'reserved byte'. 
-  **在有一个共享锁后，一个进程可能只能获得保留的锁。通过获取'reserved byte'上的写锁执行这个保留锁。
   **
   ** A process may only obtain a PENDING lock after it has obtained a
   ** SHARED lock. A PENDING lock is implemented by obtaining a write-lock
@@ -1579,24 +1778,33 @@ static int unixLock(sqlite3_file *id, int eFileLock){
   ** does not have to obtain a RESERVED lock on the way to a PENDING lock.
   ** This property is used by the algorithm for rolling back a journal file
   ** after a crash.
-  **在已经获得了共享锁后，一个进程可能只获得一个未决锁。通过获得'pending byte'的写锁执行这个未决锁。
-  **这确保了不能获得新的共享锁，但现有的共享锁还是允许继续下去。一个进程在获取未决锁的过程中不必获取共享锁。
-  **该算法使用此属性在崩溃后回滚日志文件。
   **
   ** An EXCLUSIVE lock, obtained after a PENDING lock is held, is
   ** implemented by obtaining a write-lock on the entire 'shared byte
   ** range'. Since all other locks require a read-lock on one of the bytes
   ** within this range, this ensures that no other locks are held on the
   ** database. 
-  **在持有未决锁后获得的排它锁通过获得整个'shared byte range'上的写锁实现。
-  **从之所有其他锁后需要在这个范围内的字节上有读锁，这可以确保数据库上没有其他锁。
   **
   ** The reason a single byte cannot be used instead of the 'shared byte
   ** range' is that some versions of windows do not support read-locks. By
   ** locking a random byte from a range, concurrent SHARED locks may exist
   ** even if the locking primitive used is always a write-lock.
-  **单个的字节不能代替'shared byte range'的原因是很多Windows版本不支持读锁。
-  **通过锁定一个范围内的一个随机字节，可能会存在并发共享，即使锁定原语使用的一直是一个写锁。
+  **
+  ** 进程只能在获得共享锁之后获得保留锁，一个保留锁
+  ** 是通过在获取写锁的保留字节获得。
+  **
+  ** 一个进程只有在获得一个挂起锁之后才能获得共享锁。
+  ** 一个共享锁只有在’共享字节‘中获得。但是已经获得
+  ** 共享锁，通过获取挂起锁确保不会再次获得共享锁，已经
+  ** 存在的共享锁可以保留，一个进程可以在没有获得挂起锁
+  ** 的情况下获得保留锁，这个主要用在程序出错日志文件回滚
+  **
+  ** 一个互斥锁需要在获得挂起锁之后获得，是通过获得整个
+  ** 共享字节的写锁实现。由于其他锁都需要对其中的几个字节
+  **进行读锁定，从而确保没有在这个区域内数据库没有其他的锁
+  **
+  ** 不能使用单字节而是用共享字节，这是因为某些版本的Windows
+  ** 不支持读锁，当前的共享锁在很大程度上是写锁，
   */
   int rc = SQLITE_OK;
   unixFile *pFile = (unixFile*)id;
@@ -1612,7 +1820,9 @@ static int unixLock(sqlite3_file *id, int eFileLock){
   /* If there is already a lock of this type or more restrictive on the
   ** unixFile, do nothing. Don't use the end_lock: exit path, as
   ** unixEnterMutex() hasn't been called yet.
-如果已经存在此类型的锁或者unixfile上有更强的限制性，什么都不用做。不要使用end_lock:退出路径，也不调用 unixEnterMutex()。
+  ** 如果在unixFile上已经存在这种类型的或是更加严格的锁
+  ** 那么什么也不做，就像unixEnterMutex()什么也没做一样退出
+  ** 当前路径。
   */
   if( pFile->eFileLock>=eFileLock ){
     OSTRACE(("LOCK    %d %s ok (already held) (unix)\n", pFile->h,
@@ -1620,27 +1830,30 @@ static int unixLock(sqlite3_file *id, int eFileLock){
     return SQLITE_OK;
   }
 
-  /* Make sure the locking sequence is correct.确保锁定序列是正确的。
+  /* Make sure the locking sequence is correct.
   **  (1) We never move from unlocked to anything higher than shared lock.
   **  (2) SQLite never explicitly requests a pendig lock.
   **  (3) A shared lock is always held when a reserve lock is requested.
-  **  (1) 不要从未加锁移动到高于共享锁的状态。
-  **  (2)SQLite从未明确要求pendig锁。
-  **  (3)当请求一个保留锁时，共享锁总是持有的。
+  **
+  ** 确保锁序列的正确性。
+  ** (1) 我们永远不会解锁高于共享锁
+  ** (2) SQLite从来不会显示请求pending锁
+  ** (3) 在请求保留锁时，永远保持共享锁
   */
   assert( pFile->eFileLock!=NO_LOCK || eFileLock==SHARED_LOCK );
   assert( eFileLock!=PENDING_LOCK );
   assert( eFileLock!=RESERVED_LOCK || pFile->eFileLock==SHARED_LOCK );
 
   /* This mutex is needed because pFile->pInode is shared across threads
-  **需要这个互斥信号量，因为 pFile-> pInode 在线程之间是共享的
   */
   unixEnterMutex();
   pInode = pFile->pInode;
 
   /* If some thread using this PID has a lock via a different unixFile*
   ** handle that precludes the requested lock, return BUSY.
-  **如果某个使用此PID的线程通过一个不同的unixFile* handle，即排除请求的锁，获得了一个锁，返回BUSY。
+  **
+  ** 如果一些线程使用由不同unixFile*获得锁的PID句柄
+  ** 从而获得排它锁，返回BUSY
   */
   if( (pFile->eFileLock!=pInode->eFileLock && 
           (pInode->eFileLock>=PENDING_LOCK || eFileLock>SHARED_LOCK))
@@ -1652,7 +1865,10 @@ static int unixLock(sqlite3_file *id, int eFileLock){
   /* If a SHARED lock is requested, and some thread using this PID already
   ** has a SHARED or RESERVED lock, then increment reference counts and
   ** return SQLITE_OK.
-  ** 如果请求共享锁时，使用此PID的一些线程已经有一个共享锁或保留锁，则增加引用计数并返回SQLITE_OK。
+  **
+  ** 如果请求一个共享锁，且部分线程已经在使用这个PID，
+  ** 而且其中已经包含共享或者预留锁，然后需要增加其
+  ** 引用计数，返回SQLITE_OK。
   */
   if( eFileLock==SHARED_LOCK && 
       (pInode->eFileLock==SHARED_LOCK || pInode->eFileLock==RESERVED_LOCK) ){
@@ -1669,7 +1885,9 @@ static int unixLock(sqlite3_file *id, int eFileLock){
   /* A PENDING lock is needed before acquiring a SHARED lock and before
   ** acquiring an EXCLUSIVE lock.  For the SHARED lock, the PENDING will
   ** be released.
-  在获取共享锁和排它锁之前必须有一个未决锁。获得了共享锁，该未决锁将被移除。
+  **
+  ** 在获取共享锁前需要获得pending锁，获取独占锁之前也是
+  ** 这样的，对于共享锁，pending锁就会被释放。
   */
   lock.l_len = 1L;
   lock.l_whence = SEEK_SET;
@@ -1691,14 +1909,15 @@ static int unixLock(sqlite3_file *id, int eFileLock){
 
   /* If control gets to this point, then actually go ahead and make
   ** operating system calls for the specified lock.
-  **如果控制达到这一点,那么实际上继续让操作系统调用指定的锁。
+  ** 如果控制结构到达这个点，实际上就是要求操作系统
+  ** 调用指定的锁
   */
   if( eFileLock==SHARED_LOCK ){
     assert( pInode->nShared==0 );
     assert( pInode->eFileLock==0 );
     assert( rc==SQLITE_OK );
 
-    /* Now get the read-lock */ //获取读锁
+    /* Now get the read-lock  这样就获得了读锁*/
     lock.l_start = SHARED_FIRST;
     lock.l_len = SHARED_SIZE;
     if( unixFileLock(pFile, &lock) ){
@@ -1706,12 +1925,12 @@ static int unixLock(sqlite3_file *id, int eFileLock){
       rc = sqliteErrorFromPosixError(tErrno, SQLITE_IOERR_LOCK);
     }
 
-    /* Drop the temporary PENDING lock */ //删除临时的未决锁
+    /* Drop the temporary PENDING lock  释放临时的pending锁*/
     lock.l_start = PENDING_BYTE;
     lock.l_len = 1L;
     lock.l_type = F_UNLCK;
     if( unixFileLock(pFile, &lock) && rc==SQLITE_OK ){
-      /* This could happen with a network mount */    //这可能在网络加载时发生
+      /* This could happen with a network mount  在连接网络时发生*/
       tErrno = errno;
       rc = SQLITE_IOERR_UNLOCK; 
     }
@@ -1729,14 +1948,16 @@ static int unixLock(sqlite3_file *id, int eFileLock){
   }else if( eFileLock==EXCLUSIVE_LOCK && pInode->nShared>1 ){
     /* We are trying for an exclusive lock but another thread in this
     ** same process is still holding a shared lock. 
-    **我们尝试获取排它锁，但是在这一过程中另一个线程一直持有共享锁。
+    ** 我们申请一个独占锁但是同一进城的不同线程任然占有这个共享锁
     */
     rc = SQLITE_BUSY;
   }else{
     /* The request was for a RESERVED or EXCLUSIVE lock.  It is
     ** assumed that there is a SHARED or greater lock on the file
     ** already.
-    ** 请求保留锁或独占锁。假设已经有一个共享锁或文件有更高级的了
+    **
+    ** 对于预留锁或排它锁的请求，主要是基于本文件已经有一个共享锁
+    ** 或者是更高一级的锁，
     */
     assert( 0!=pFile->eFileLock );
     lock.l_type = F_WRLCK;
@@ -1765,8 +1986,9 @@ static int unixLock(sqlite3_file *id, int eFileLock){
   ** transitioning from a SHARED to a RESERVED lock.  The change
   ** from SHARED to RESERVED marks the beginning of a normal
   ** write operation (not a hot journal rollback).
-  **设置事务计数器改变检查标记，当从共享锁转换到保留锁时。
-  **从共享锁转换到保留锁标志着一个正常的写操作（不是热日志回滚）开始了。
+  **
+  ** 从共享锁转变为预留锁时，设置事务计数器更改检查标志。
+  ** 这个改变标志着正常的写操作开始(而不是热日志回滚)
   */
   if( rc==SQLITE_OK
    && pFile->eFileLock<=SHARED_LOCK
@@ -1797,7 +2019,8 @@ end_lock:
 /*
 ** Add the file descriptor used by file handle pFile to the corresponding
 ** pUnused list.
-**添加文件句柄pFile使用的文件描述符到相应的pUnused列表。
+**
+** 由文件句柄pFile增加新的文件描述符到pUnused对象列表，
 */
 static void setPendingFd(unixFile *pFile){
   unixInodeInfo *pInode = pFile->pInode;
@@ -1811,20 +2034,24 @@ static void setPendingFd(unixFile *pFile){
 /*
 ** Lower the locking level on file descriptor pFile to eFileLock.  eFileLock
 ** must be either NO_LOCK or SHARED_LOCK.
-**降低文件描述符pFile上的锁定级别为eFileLock。eFileLock必须是NO_LOCK或SHARED_LOCK。
 **
 ** If the locking level of the file descriptor is already at or below
 ** the requested locking level, this routine is a no-op.
-** 如果文件描述符的锁定级别已经达到或低于所请求的锁定级别，此例程是一个空操作。
-**
+** 
 ** If handleNFSUnlock is true, then on downgrading an EXCLUSIVE_LOCK to SHARED
 ** the byte range is divided into 2 parts and the first part is unlocked then
 ** set to a read lock, then the other part is simply unlocked.  This works 
 ** around a bug in BSD NFS lockd (also seen on MacOSX 10.3+) that fails to 
 ** remove the write lock on a region when a read lock is set.
-**如果handleNFSUnlock为真，则降低一个EXCLUSIVE_LOCK为共享锁，其字节范围分为两部分，
-**一部分是为加锁然后设置为读锁，另一部分则是简单的未加锁。这一错误存在DSB NFS 加锁（在MacOSX 10.3+中也见过），
-**即当设置了一个读锁就无法在该区域删除写锁。
+** 
+** 将文件描述符降低到eFileLock级别，必须是NO_LOCK或者
+** SHARED_LOCK，
+** 如果文件描述符的锁定级别已经是或者低于请求的
+** 锁级别，那么本操作为空
+** 如果NFSUnlock句柄为真，然后将EXCLUSIVE_LOCK降低为共享级别，
+** 锁定字节分为两个部分，前一个解锁后一个设置为读锁。
+** 这个工作主要是围绕BSD NFS的锁机制(包括MacOSX 10.3+)在读取
+** 锁设置或删除设置的锁时发生失败
 */
 static int posixUnlock(sqlite3_file *id, int eFileLock, int handleNFSUnlock){
   unixFile *pFile = (unixFile*)id;
@@ -1848,17 +2075,19 @@ static int posixUnlock(sqlite3_file *id, int eFileLock, int handleNFSUnlock){
     assert( pInode->eFileLock==pFile->eFileLock );
 
 #ifdef SQLITE_DEBUG
-        /* When reducing a lock such that other processes can start
+    /* When reducing a lock such that other processes can start
     ** reading the database file again, make sure that the
     ** transaction counter was updated if any part of the database
     ** file changed.  If the transaction counter is not updated,
     ** other connections to the same file might not realize that
     ** the file has changed and hence might not know to flush their
     ** cache.  The use of a stale cache can lead to database corruption.
-    **当减少锁以便其他进程可以再次读取数据库文件的时候，要确保事务计数器已经更新，如果数据库文件文件的任何部分发生了改变。
-    **如果事务计数器没有更新，对同一文件的其他连接可能没有意识到该文件已经更改，因此可能不知道要刷新其缓存。
-    **使用旧的缓存可能会导致数据库的损坏。
-*/
+    ** 减少锁定以使	其他进程可以启动对于数据库文件的读写
+    ** 确保事务计数器已更新。如果数据库的任何一部分文件得到
+    ** 更新，但是事务计数器没有更新，其他连接到同一个文件的
+    ** 进程可能不会发现文件已更改，也不知道需要更新缓存。使用
+    ** 旧缓存会导致数据库损坏。
+    */
     pFile->inNormalWrite = 0;
 #endif
 
@@ -1866,12 +2095,18 @@ static int posixUnlock(sqlite3_file *id, int eFileLock, int handleNFSUnlock){
     ** before establishing the readlock - to avoid a race condition we downgrade
     ** the lock in 2 blocks, so that part of the range will be covered by a 
     ** write lock until the rest is covered by a read lock:
-    **在NFS上降级到共享锁，包括在建立读锁之前清除写锁—以免在降低2块锁时有竞争的情况，使一个写锁覆盖部分范围，
-    **直到读锁覆盖剩下的部分：
     **  1:   [WWWWW]
     **  2:   [....W]
     **  3:   [RRRRW]
     **  4:   [RRRR.]
+    **
+    ** 在建立写锁前需要在NFS上共享锁的降级和写锁的清除，
+    ** 从而避免在降级时发生两个区块间的竞争，所以其他部分
+    ** 任然被写锁覆盖，直到被读锁覆盖:
+    ** 1:[WWWWW]
+    ** 2:[....W]
+    ** 3:[RRRRRW]
+    ** 4:[RRRR.]
     */
     if( eFileLock==SHARED_LOCK ){
 
@@ -1881,7 +2116,7 @@ static int posixUnlock(sqlite3_file *id, int eFileLock, int handleNFSUnlock){
 #endif
 #if defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE
       if( handleNFSUnlock ){
-        int tErrno;               /* Error code from system call errors */  //系统调用错误的错误代码
+        int tErrno;               /* Error code from system call errors */
         off_t divSize = SHARED_SIZE - 1;
         
         lock.l_type = F_UNLCK;
@@ -1933,10 +2168,12 @@ static int posixUnlock(sqlite3_file *id, int eFileLock, int handleNFSUnlock){
           ** indicates that the other process is not following the locking
           ** protocol. If this happens, return SQLITE_IOERR_RDLOCK. Returning
           ** SQLITE_BUSY would confuse the upper layer (in practice it causes 
-          ** an assert to fail).
-          **理论上，调用unixFileLock()不能失败，因为另一程序正持有一个不兼容锁。
-          **如果失败了，这表明其他进程没有遵循加锁协议。如果发生这种情况，返回SQLITE_IOERR_RDLOCK。
-          **返回SQLITE_BUSY会让上层混淆(实际上它导致一个失败的生效)。
+          ** an assert to fail). 
+          ** 
+          ** 理论上，调用unixFileLock()不会导致失败，其他的进程拥有
+          ** 不兼容锁，如果发生，也就表面其他的进程没有遵从锁协议
+          ** 发生这种情况时，返回SQLITE_IOERR_RDLOCK，返回SQLITE_BUSY会在
+          ** 上层导致混乱(实践中导致断言失败)
           */ 
           rc = SQLITE_IOERR_RDLOCK;
           pFile->lastErrno = errno;
@@ -1960,7 +2197,9 @@ static int posixUnlock(sqlite3_file *id, int eFileLock, int handleNFSUnlock){
     /* Decrement the shared lock counter.  Release the lock using an
     ** OS call only when all threads in this same process have released
     ** the lock.
-    **共享锁计数器进行递减。当这一进程中的所有线程释放锁时，释放使用OS调用的锁。
+    **
+    ** 减少共享锁的计数器，只有在所有线程都属于同一个
+    ** 进程释放锁时使用系统调用释放锁
     */
     pInode->nShared--;
     if( pInode->nShared==0 ){
@@ -1980,7 +2219,9 @@ static int posixUnlock(sqlite3_file *id, int eFileLock, int handleNFSUnlock){
     /* Decrement the count of locks against this same file.  When the
     ** count reaches zero, close any other file descriptors whose close
     ** was deferred because of outstanding locks.
-    **对相同的文件的锁的计数进行递减。当计数达到0 时，关闭所有其他由于outstanding锁而推迟关闭的文件描述符
+    ** 
+    ** 减少对于同一个文件的计数器，在计数器值为0时，
+    ** 关闭所有因延时而导致的文件描述符
     */
     pInode->nLock--;
     assert( pInode->nLock>=0 );
@@ -1998,11 +2239,12 @@ end_unlock:
 /*
 ** Lower the locking level on file descriptor pFile to eFileLock.  eFileLock
 ** must be either NO_LOCK or SHARED_LOCK.
-**降低文件描述符pFile上的锁定级别为eFileLock。eFileLock必须是NO_LOCK或SHARED_LOCK。
 **
 ** If the locking level of the file descriptor is already at or below
 ** the requested locking level, this routine is a no-op.
-**如果文件描述符的锁定级别已经达到或低于所请求的锁定级别，此例程是一个空操作。
+**
+** 将文件描述符上的锁降低到eFileLock。必须是NO_LOCK或SHARED_LOCK
+** 如果文件描述符的锁级别已经是或者低于请求的锁级别，操作无效。
 */
 static int unixUnlock(sqlite3_file *id, int eFileLock){
   return posixUnlock(id, eFileLock, 0);
@@ -2013,11 +2255,16 @@ static int unixUnlock(sqlite3_file *id, int eFileLock){
 ** common to all locking schemes. It closes the directory and file
 ** handles, if they are valid, and sets all fields of the unixFile
 ** structure to 0.
-**这个函数执行所有文件锁定计划共同的“关闭文件”操作部分。关闭目录和文件句柄,如果他们是有效的,并设置unixFile结构的所有字段为0。
+**
 ** It is *not* necessary to hold the mutex when this routine is called,
 ** even on VxWorks.  A mutex will be acquired on VxWorks by the
 ** vxworksReleaseFileId() routine.
-**在调用这个例程时它并不需要互斥量，即使是在VxWorks。在VxWorks上，互斥量通过vxworksReleaseFileId()例程获得。
+**
+** 这个函数执行文件关闭对应的锁定方案，关闭目录和文件句柄
+** 如果这些有效，同时设置unixFile所有字段为0
+** 
+** 调用这个例程时不需要保持互斥体，即使在VxWorks上也是这样的
+** 由vxworksReleaseField()在VxWorks上获得互斥量。
 */
 static int closeUnixFile(sqlite3_file *id){
   unixFile *pFile = (unixFile*)id;
@@ -2042,7 +2289,7 @@ static int closeUnixFile(sqlite3_file *id){
 }
 
 /*
-** Close a file.  关闭一个文件
+** Close a file. 关闭一个文件
 */
 static int unixClose(sqlite3_file *id){
   int rc = SQLITE_OK;
@@ -2052,7 +2299,8 @@ static int unixClose(sqlite3_file *id){
 
   /* unixFile.pInode is always valid here. Otherwise, a different close
   ** routine (e.g. nolockClose()) would be called instead.
-**在这里unixFile.pInode始终是有效的。否则，将被调用一个不同的但相似的程序（如nolockClose（））来代替。
+  ** unixFile.pInode在此处总是有效的。否则，就会使用
+  ** 一个不同的关闭方式(例如nolockClose())
   */
   assert( pFile->pInode->nLock>0 || pFile->pInode->bProcessLock==0 );
   if( ALWAYS(pFile->pInode) && pFile->pInode->nLock ){
@@ -2060,8 +2308,10 @@ static int unixClose(sqlite3_file *id){
     ** yet because that would clear those locks.  Instead, add the file
     ** descriptor to pInode->pUnused list.  It will be automatically closed 
     ** when the last lock is cleared.
-    **如果有未完成的锁，事实还不能关闭这个文件，因为那样会清除这些锁。
-    **相反，将该文件描述符添加到pInode->pUnused列表。当清除最后的锁定时，它会自动关闭。
+    **
+    ** 如果仍有未完成的锁，则实际上不需要关闭文件，因为这样会清除那些锁
+    ** 而需要添加文件描述符到pInode->pUnused对象列表中，在最后一个锁清除时
+    ** 自动关闭文件。
     */
     setPendingFd(pFile);
   }
@@ -2076,12 +2326,11 @@ static int unixClose(sqlite3_file *id){
 
 /******************************************************************************
 ****************************** No-op Locking **********************************
-// 无操作锁
+**
 ** Of the various locking implementations available, this is by far the
 ** simplest:  locking is ignored.  No attempt is made to lock the database
 ** file for reading or writing.
 **
-// 相对其他一系列锁的实现，这种无操作锁是迄今为止最简单的，它没有试图锁住数据库文件进行读或写。
 ** This locking mode is appropriate for use on read-only databases
 ** (ex: databases that are burned into CD-ROM, for example.)  It can
 ** also be used if the application employs some external mechanism to
@@ -2090,10 +2339,16 @@ static int unixClose(sqlite3_file *id){
 ** corruption if this locking mode is used in situations where multiple
 ** database connections are accessing the same database file at the same
 ** time and one or more of those connections are writing.
+**
+** 各种可用锁协议的实现，这是最简单的实现:锁被忽略，对于
+** 读或者写数据库都不锁定数据库.
+** 这个锁定模式仅仅用于只读数据库(例如烧制到CD-ROM的数据库)
+** 如果应用程序使用某些外部机制，也可以使用，防止同一个
+** 数据库被两个或更多同时访问.但是这其中存在着严重的数据库
+** 损坏风险，如果这种锁定模式用于多个数据库连接并指向同一个
+** 数据库同时一个或多个写操作。
+**
 */
-// 这种模式的锁适用于只读的数据库，例如刻在CD-ROM上的数据库。当一个应用程序使用外部机制去阻止两个或两个以上的
-// 数据库连接对同一个数据库同时进行访问时也可以使用它。但是，当这种锁用于大量的数据库连接同时访问一个数据库，并
-// 且这些连接当中有一个或者更多的是进行写操作的情况的时候，就会一个严重的数据库损坏风险。
 
 static int nolockCheckReservedLock(sqlite3_file *NotUsed, int *pResOut){
   UNUSED_PARAMETER(NotUsed);
@@ -2110,7 +2365,7 @@ static int nolockUnlock(sqlite3_file *NotUsed, int NotUsed2){
 }
 
 /*
-** Close the file.   // 关闭文件
+** Close the file.
 */
 static int nolockClose(sqlite3_file *id) {
   return closeUnixFile(id);
@@ -2121,7 +2376,7 @@ static int nolockClose(sqlite3_file *id) {
 
 /******************************************************************************
 ************************* Begin dot-file Locking ******************************
-// 点文件锁
+**
 ** The dotfile locking implementation uses the existance of separate lock
 ** files (really a directory) to control access to the database.  This works
 ** on just about every filesystem imaginable.  But there are serious downsides:
@@ -2135,23 +2390,32 @@ static int nolockClose(sqlite3_file *id) {
 ** Nevertheless, a dotlock is an appropriate locking mode for use if no
 ** other locking strategy is available.
 **
-// 点文件锁的实现是使用存在单独的锁文件，就是一种目录来控制对数据库的访问。这种机制用于任意一种文件系统，但是它又存在严重的缺陷：
-（1）它没有并发性，一个读者就阻碍了其他所有要对数据库进行读写的连接；
-（2）应用程序的崩溃或功率的耗损都会使旧的锁文件无法自动清理，而需要手动清除。
-不过，点文件锁是一种适用于没有其他锁策略可用的情况的锁机制。
 ** Dotfile locking works by creating a subdirectory in the same directory as
 ** the database and with the same name but with a ".lock" extension added.
 ** The existance of a lock directory implies an EXCLUSIVE lock.  All other
 ** lock types (SHARED, RESERVED, PENDING) are mapped into EXCLUSIVE.
+**
+** dot文件锁定主要使用文件分离锁实现(确实是一个目录)
+** 实现对于一个数据库的访问控制。这个在所有的文件系统
+** 中都是可以预想的，但是存在严重的缺点:
+** 
+** (1) 零并发，单个读进程限制其他读取和写入数据库的连接
+** (2) 应用程序崩溃或者断电会导致过时的文件锁定，需要进行手动清除
+**
+** 然而，dot文件锁在没有其他锁策略可用时是合适的锁机制。
+** 
+** dot文件锁通过锁定同一目录下创建一个同名的子目录实现数据库同名
+** 只是以".lock"结尾。这个锁意味着排它锁，所有其他类型的锁都被映射
+** 为互斥锁(共享锁，预留锁，pending锁)
 */
-// 点文件锁的工作原理是在同一个目录里面创建次目录存入数据库，并且有相同的扩展名“.lock”。一个锁目录的存在意
-// 味着它是排他锁。其它所有类型的锁（共享锁，保留锁，未决锁）都映射到拍他锁。
+
 /*
 ** The file suffix added to the data base filename in order to create the
 ** lock directory.
+**
+** 将文件后缀名添加到数据库文件名后便于创建锁目录
 */
-// 文件后缀添加到数据库文件里面以创建锁目录。
-#define DOTLOCK_SUFFIX ".lock"    //预定义锁文件后缀为.lock
+#define DOTLOCK_SUFFIX ".lock"
 
 /*
 ** This routine checks if there is a RESERVED lock held on the specified
@@ -2159,14 +2423,17 @@ static int nolockClose(sqlite3_file *id) {
 ** to a non-zero value otherwise *pResOut is set to zero.  The return value
 ** is set to SQLITE_OK unless an I/O error occurs during lock checking.
 **
-// 这个程序会检查指定文件或者是其他任何进程里是否持有保留锁，如果持有保留锁，将指针*pResOout的值设为非零，
-否则设为0.返回值设为SQLITE_OK除非在锁检查期间发生I/O错误。
 ** In dotfile locking, either a lock exists or it does not.  So in this
 ** variation of CheckReservedLock(), *pResOut is set to true if any lock
 ** is held on the file and false if the file is unlocked.
+**
+** 这个例程主要是检查特定的文件是否由本进程或其他进程
+** 设置了 预定锁，如果还保留，设置*pResOut为非零值否则为零
+** 返回值为SQLITE_OK，除非在进行锁定检查时发生IO错误
+** 
+** 在dot文件锁定中，无论锁存在还是不存在,需要在CheckReservedLock()
+** 中进行改变，*pResOut在文件解锁时设置为假否则为真。
 */
-// 在点文件锁机制中，锁要么存在要么不存在。所以函数CheckReservedLock()的变化就是如果文件被加锁，*pResOut 
-//的值设为true，文件没被加锁则设为false。
 static int dotlockCheckReservedLock(sqlite3_file *id, int *pResOut) {
   int rc = SQLITE_OK;
   int reserved = 0;
@@ -2176,14 +2443,13 @@ static int dotlockCheckReservedLock(sqlite3_file *id, int *pResOut) {
   
   assert( pFile );
 
-  /* Check if a thread in this process holds such a lock */    // 检查进程中是否有一个线程持有锁
+  /* Check if a thread in this process holds such a lock */
   if( pFile->eFileLock>SHARED_LOCK ){
     /* Either this connection or some other connection in the same process
-** holds a lock on the file.  No need to check further. */ 
-// 这个连接或者是同一进程中其它一些连接中有锁定文件，则停止检查
+    ** holds a lock on the file.  No need to check further. */
     reserved = 1;
   }else{
-    /* The lock is held if and only if the lockfile exists */    // 持有锁，当且仅当锁文件存在
+    /* The lock is held if and only if the lockfile exists */
     const char *zLockFile = (const char*)pFile->lockingContext;
     reserved = osAccess(zLockFile, 0)==0;
   }
@@ -2194,36 +2460,37 @@ static int dotlockCheckReservedLock(sqlite3_file *id, int *pResOut) {
 
 /*
 ** Lock the file with the lock specified by parameter eFileLock - one
-** of the following:  
+** of the following:
 **
-// 使用参数eFileLock以下值之一指定的锁对文件加锁
-**     (1) SHARED_LOCK   // 共享锁
-**     (2) RESERVED_LOCK   // 保留锁
-**     (3) PENDING_LOCK    // 未决锁
-**     (4) EXCLUSIVE_LOCK   // 排他锁
+**     (1) SHARED_LOCK
+**     (2) RESERVED_LOCK
+**     (3) PENDING_LOCK
+**     (4) EXCLUSIVE_LOCK
 **
 ** Sometimes when requesting one lock state, additional lock states
 ** are inserted in between.  The locking might fail on one of the later
 ** transitions leaving the lock state different from what it started but
 ** still short of its goal.  The following chart shows the allowed
 ** transitions and the inserted intermediate states:
-// 当请求一个锁状态的时候，额外的锁状态会插入到其中。锁定失败后会后来的转换会使它不同于开始时候的锁状态，
-但是仍能达到预期目标。以下的记录是允许的转换和插入的状态。
 **
-**    UNLOCKED -> SHARED   // 未加锁-->共享锁
-**    SHARED -> RESERVED    // 共享锁转为-->保留锁
-**    SHARED -> (PENDING) -> EXCLUSIVE   // 共享锁-->未决锁（插入）-->排他锁
-**    RESERVED -> (PENDING) -> EXCLUSIVE  // 保留锁-->未决锁（插入）-->排他锁
-**    PENDING -> EXCLUSIVE  // 未决锁-->排他锁
+**    UNLOCKED -> SHARED
+**    SHARED -> RESERVED
+**    SHARED -> (PENDING) -> EXCLUSIVE
+**    RESERVED -> (PENDING) -> EXCLUSIVE
+**    PENDING -> EXCLUSIVE
 **
 ** This routine will only increase a lock.  Use the sqlite3OsUnlock()
 ** routine to lower a locking level.
-** 
-// 这个程序只是增加一个锁。使用sqlite3的OsUnlock()程序降低锁的级别。
-** With dotfile locking, we really only support state (4): EXCLUSIVE.
+**
+** With dotfile locking, we really only support state (4): EXCLUSIVE.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
+
+
 ** But we track the other locking levels internally.
+**
+** 在dot文件锁中，我们只要支持状态(4),独占，但是我们
+** 在程序内部跟踪其他的锁定级别。
 */
-// 使用点文件锁，实际上只支持第四种状态：排他锁，但是可以在内部追踪其他级别的锁。
 static int dotlockLock(sqlite3_file *id, int eFileLock) {
   unixFile *pFile = (unixFile*)id;
   char *zLockFile = (char *)pFile->lockingContext;
@@ -2232,11 +2499,15 @@ static int dotlockLock(sqlite3_file *id, int eFileLock) {
 
   /* If we have any lock, then the lock file already exists.  All we have
   ** to do is adjust our internal record of the lock level.
+  ** 
+  ** 如果我们拥有任何锁，而且锁文件存在，
+  ** 我们需要调整锁的级别记录.
   */
-// 如果有其中任意一种锁，那么锁文件其实已经存在了，我们要做的只是修改内部记录的锁级别。
   if( pFile->eFileLock > NO_LOCK ){
     pFile->eFileLock = eFileLock;
-    /* Always update the timestamp on the old file */   // 更新旧文件的时间戳
+    /* Always update the timestamp on the old file 
+	** 始终更新旧文件的时间戳
+	*/
 #ifdef HAVE_UTIME
     utime(zLockFile, NULL);
 #else
@@ -2245,10 +2516,10 @@ static int dotlockLock(sqlite3_file *id, int eFileLock) {
     return SQLITE_OK;
   }
   
-  /* grab an exclusive lock */    // 攫取一个排他锁
+  /* grab an exclusive lock */
   rc = osMkdir(zLockFile, 0777);
   if( rc<0 ){
-    /* failed to open/create the lock directory */   // 创建锁目录失败
+    /* failed to open/create the lock directory */
     int tErrno = errno;
     if( EEXIST == tErrno ){
       rc = SQLITE_BUSY;
@@ -2261,7 +2532,7 @@ static int dotlockLock(sqlite3_file *id, int eFileLock) {
     return rc;
   } 
   
-  /* got it, set the type and return ok */    // 获取成功，设置类型值并返回ok
+  /* got it, set the type and return ok */
   pFile->eFileLock = eFileLock;
   return rc;
 }
@@ -2270,14 +2541,16 @@ static int dotlockLock(sqlite3_file *id, int eFileLock) {
 ** Lower the locking level on file descriptor pFile to eFileLock.  eFileLock
 ** must be either NO_LOCK or SHARED_LOCK.
 **
-// 在文件描述符pFile 到eFileLok降低锁的级别 ，eFileLock必须是NO_LOCK or和SHARED_LOCK两者之一。
 ** If the locking level of the file descriptor is already at or below
 ** the requested locking level, this routine is a no-op.
 **
-// 如果文件描述符的锁定级别已经在正在请求的锁级别或以下，那么这个程序是一个空操作。
 ** When the locking level reaches NO_LOCK, delete the lock file.
+**
+** 将文件描述符在pFile 上的级别调整为eFileLock . eFileLock
+** 必须为NO_LOCK 或SHARED_LOCK
+** 如果文件描述符锁定级别等于或低于请求的锁定级别，操作无意义
+** 当锁定级别达到NO_LOCK时，删除锁定文件
 */
-// 当锁定级别达到了NO_LOCK时删除锁文件。
 static int dotlockUnlock(sqlite3_file *id, int eFileLock) {
   unixFile *pFile = (unixFile*)id;
   char *zLockFile = (char *)pFile->lockingContext;
@@ -2288,21 +2561,20 @@ static int dotlockUnlock(sqlite3_file *id, int eFileLock) {
            pFile->eFileLock, getpid()));
   assert( eFileLock<=SHARED_LOCK );
   
-  /* no-op if possible */   // 空操作如果有可能
+  /* no-op if possible */
   if( pFile->eFileLock==eFileLock ){
     return SQLITE_OK;
   }
 
   /* To downgrade to shared, simply update our internal notion of the
   ** lock state.  No need to mess with the file on disk.
-  */  
-// 降级到共享时，只需简单地更新锁状态的内部概念，而不需要毁坏磁盘文件。
+  */
   if( eFileLock==SHARED_LOCK ){
     pFile->eFileLock = SHARED_LOCK;
     return SQLITE_OK;
   }
   
-  /* To fully unlock the database, delete the lock file */   // 完全打开数据库时删除锁文件
+  /* To fully unlock the database, delete the lock file */
   assert( eFileLock==NO_LOCK );
   rc = osRmdir(zLockFile);
   if( rc<0 && errno==ENOTDIR ) rc = osUnlink(zLockFile);
@@ -2323,8 +2595,7 @@ static int dotlockUnlock(sqlite3_file *id, int eFileLock) {
 
 /*
 ** Close a file.  Make sure the lock has been released before closing.
-*/ 
-// 关闭一个文件，确保锁在关闭之前已经被释放。
+*/
 static int dotlockClose(sqlite3_file *id) {
   int rc;
   if( id ){
@@ -2340,8 +2611,8 @@ static int dotlockClose(sqlite3_file *id) {
 
 /******************************************************************************
 ************************** Begin flock Locking ********************************
-// 聚集锁
-** Use the flock() system call to do file locking. 使用系统调用函数flock() 执行文件锁定。
+**
+** Use the flock() system call to do file locking.
 **
 ** flock() locking is like dot-file locking in that the various
 ** fine-grain locking levels supported by SQLite are collapsed into
@@ -2350,16 +2621,21 @@ static int dotlockClose(sqlite3_file *id) {
 ** still works when you do this, but concurrency is reduced since
 ** only a single process can be reading the database at a time.
 **
-// 聚集锁在SQLite支持各种细粒锁级别紧缩成一个单独的排他锁这一点上和点文件锁是一样的。换句话说，共享锁，
-保留锁和未决锁对于排他锁来说是一样的。当你这样做时，SQLite仍然工作,但并发性降低,因为同一时间只有一个进程可以读取数据库。
 ** Omit this section if SQLITE_ENABLE_LOCKING_STYLE is turned off or if
 ** compiling for VXWORKS.
-*/  
-// 如果SQLITE_ENABLE_LOCKING_STYLE被关闭或者VXWORKS被编译，则忽略这部分。
+** 
+** 							锁定整个文件
+** 
+** 使用flock()系统调用进行整个文件锁定
+** flock()锁定就像dot文件锁定一样将SQLite支持的各种锁映射为单一的排他锁
+** 换句话说，共享锁，预留锁和延迟锁在此时和互斥锁一样，SQLite在此时
+** 仍然像你预期的那样工作，但是并发性降低，每次只有一个进程对数据库读写
+** 如果SQLITE_ENABLE_LOCKING_STYLE关闭或者编译VXWORKS时忽略此部分
+*/
 #if SQLITE_ENABLE_LOCKING_STYLE && !OS_VXWORKS
 
 /*
-** Retry flock() calls that fail with EINTR  // 系统调用中断则重试flock()函数调用
+** Retry flock() calls that fail with EINTR
 */
 #ifdef EINTR
 static int robust_flock(int fd, int op){
@@ -2378,8 +2654,6 @@ static int robust_flock(int fd, int op){
 ** to a non-zero value otherwise *pResOut is set to zero.  The return value
 ** is set to SQLITE_OK unless an I/O error occurs during lock checking.
 */
-// 这个程序会检查指定文件或者是其他任何进程里是否持有保留锁，如果持有保留锁，将指针*pResOout的值设为非零，
-// 否则设为0.返回值设为SQLITE_OK除非在锁检查期间发生I/O错误。
 static int flockCheckReservedLock(sqlite3_file *id, int *pResOut){
   int rc = SQLITE_OK;
   int reserved = 0;
@@ -2389,21 +2663,21 @@ static int flockCheckReservedLock(sqlite3_file *id, int *pResOut){
   
   assert( pFile );
   
-  /* Check if a thread in this process holds such a lock */  // 检查进程中是否有线程持有保留锁
+  /* Check if a thread in this process holds such a lock */
   if( pFile->eFileLock>SHARED_LOCK ){
     reserved = 1;
   }
   
-  /* Otherwise see if some other process holds it. */   // 如果没有则查看其它进程
+  /* Otherwise see if some other process holds it. */
   if( !reserved ){
-    /* attempt to get the lock */     // 获取锁
+    /* attempt to get the lock */
     int lrc = robust_flock(pFile->h, LOCK_EX | LOCK_NB);
     if( !lrc ){
-      /* got the lock, unlock it */    // 获取锁，并解锁
+      /* got the lock, unlock it */
       lrc = robust_flock(pFile->h, LOCK_UN);
       if ( lrc ) {
         int tErrno = errno;
-        /* unlock failed with an error */     // 解锁发生错误并且失败
+        /* unlock failed with an error */
         lrc = SQLITE_IOERR_UNLOCK; 
         if( IS_LOCK_ERROR(lrc) ){
           pFile->lastErrno = tErrno;
@@ -2413,7 +2687,7 @@ static int flockCheckReservedLock(sqlite3_file *id, int *pResOut){
     } else {
       int tErrno = errno;
       reserved = 1;
-      /* someone else might have it reserved */     // 其它进程可能保留了锁
+      /* someone else might have it reserved */
       lrc = sqliteErrorFromPosixError(tErrno, SQLITE_IOERR_LOCK); 
       if( IS_LOCK_ERROR(lrc) ){
         pFile->lastErrno = tErrno;
@@ -2437,37 +2711,36 @@ static int flockCheckReservedLock(sqlite3_file *id, int *pResOut){
 ** Lock the file with the lock specified by parameter eFileLock - one
 ** of the following:
 **
-// 使用参数eFileLock以下值之一指定的锁对文件加锁
-**     (1) SHARED_LOCK   // 共享锁
-**     (2) RESERVED_LOCK   // 保留锁
-**     (3) PENDING_LOCK    // 未决锁
-**     (4) EXCLUSIVE_LOCK   // 排他锁
+**     (1) SHARED_LOCK
+**     (2) RESERVED_LOCK
+**     (3) PENDING_LOCK
+**     (4) EXCLUSIVE_LOCK
+**
 ** Sometimes when requesting one lock state, additional lock states
 ** are inserted in between.  The locking might fail on one of the later
 ** transitions leaving the lock state different from what it started but
 ** still short of its goal.  The following chart shows the allowed
 ** transitions and the inserted intermediate states:
 **
-// 当请求一个锁状态的时候，额外的锁状态会插入到其中。锁定失败后会后来的转换会使它不同于开始时候的锁状态，
-但是仍能达到预期目标。以下的记录是允许的转换和插入的状态。
-**
-**    UNLOCKED -> SHARED   //未加锁-->共享锁
-**    SHARED -> RESERVED    //共享锁转为-->保留锁
-**    SHARED -> (PENDING) -> EXCLUSIVE   //共享锁-->未决锁（插入）-->排他锁
-**    RESERVED -> (PENDING) -> EXCLUSIVE  //保留锁-->未决锁（插入）-->排他锁
-**    PENDING -> EXCLUSIVE  //未决锁-->排他锁
+**    UNLOCKED -> SHARED
+**    SHARED -> RESERVED
+**    SHARED -> (PENDING) -> EXCLUSIVE
+**    RESERVED -> (PENDING) -> EXCLUSIVE
+**    PENDING -> EXCLUSIVE
 **
 ** flock() only really support EXCLUSIVE locks.  We track intermediate
 ** lock states in the sqlite3_file structure, but all locks SHARED or
 ** above are really EXCLUSIVE locks and exclude all other processes from
 ** access the file.
 **
-// 聚集锁实际上只支持排他锁。我们在sqlite3文件结构中追踪中间级别的锁状态，但是所有的共享锁或者以上级别的锁事实上
-都是排他锁，并且拒绝其它进程访问这个文件。
 ** This routine will only increase a lock.  Use the sqlite3OsUnlock()
 ** routine to lower a locking level.
+**
+** flock()只支持排它锁，我们在追踪sqlite3_file结构的中间状态时，发现
+** 所有共享及之上的锁都表现为排它锁，不允许其他进程访问本文件                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+
+
 */
-// 这个程序只是增加一个锁。使用sqlite3的OsUnlock()程序降低锁的级别。
 static int flockLock(sqlite3_file *id, int eFileLock) {
   int rc = SQLITE_OK;
   unixFile *pFile = (unixFile*)id;
@@ -2475,7 +2748,7 @@ static int flockLock(sqlite3_file *id, int eFileLock) {
   assert( pFile );
 
   /* if we already have a lock, it is exclusive.  
-  ** Just adjust level and punt on outta here. */  // 如果已经有一个排他锁，只需调整锁的级别
+  ** Just adjust level and punt on outta here. */
   if (pFile->eFileLock > NO_LOCK) {
     pFile->eFileLock = eFileLock;
     return SQLITE_OK;
@@ -2485,13 +2758,13 @@ static int flockLock(sqlite3_file *id, int eFileLock) {
   
   if (robust_flock(pFile->h, LOCK_EX | LOCK_NB)) {
     int tErrno = errno;
-    /* didn't get, must be busy */     // 系统繁忙，请求失败
+    /* didn't get, must be busy */
     rc = sqliteErrorFromPosixError(tErrno, SQLITE_IOERR_LOCK);
     if( IS_LOCK_ERROR(rc) ){
       pFile->lastErrno = tErrno;
     }
   } else {
-    /* got it, set the type and return ok */    // 获取成功，设置类型值并返回ok
+    /* got it, set the type and return ok */
     pFile->eFileLock = eFileLock;
   }
   OSTRACE(("LOCK    %d %s %s (flock)\n", pFile->h, azFileLock(eFileLock), 
@@ -2509,11 +2782,9 @@ static int flockLock(sqlite3_file *id, int eFileLock) {
 ** Lower the locking level on file descriptor pFile to eFileLock.  eFileLock
 ** must be either NO_LOCK or SHARED_LOCK.
 **
-// 在文件描述符pFile 到eFileLok降低锁的级别 ，eFileLock必须是NO_LOCK or和SHARED_LOCK两者之一。
 ** If the locking level of the file descriptor is already at or below
 ** the requested locking level, this routine is a no-op.
 */
-// 如果文件描述符的锁定级别已经在正在请求的锁级别或以下，那么这个程序是一个空操作。
 static int flockUnlock(sqlite3_file *id, int eFileLock) {
   unixFile *pFile = (unixFile*)id;
   
@@ -2522,18 +2793,18 @@ static int flockUnlock(sqlite3_file *id, int eFileLock) {
            pFile->eFileLock, getpid()));
   assert( eFileLock<=SHARED_LOCK );
   
-  /* no-op if possible */     // 无操作是可能的
+  /* no-op if possible */
   if( pFile->eFileLock==eFileLock ){
     return SQLITE_OK;
   }
   
-  /* shared can just be set because we always have an exclusive */    // 共享锁只能被旁置因为总有一个排他锁
+  /* shared can just be set because we always have an exclusive */
   if (eFileLock==SHARED_LOCK) {
     pFile->eFileLock = eFileLock;
     return SQLITE_OK;
   }
   
-  /* no, really, unlock. */     // 否则就解锁
+  /* no, really, unlock. */
   if( robust_flock(pFile->h, LOCK_UN) ){
 #ifdef SQLITE_IGNORE_FLOCK_LOCK_ERRORS
     return SQLITE_OK;
@@ -2546,7 +2817,7 @@ static int flockUnlock(sqlite3_file *id, int eFileLock) {
 }
 
 /*
-** Close a file.     // 关闭文件
+** Close a file.
 */
 static int flockClose(sqlite3_file *id) {
   if( id ){
@@ -2555,24 +2826,27 @@ static int flockClose(sqlite3_file *id) {
   return closeUnixFile(id);
 }
 
-#endif /* SQLITE_ENABLE_LOCKING_STYLE && !OS_VXWORK */    
-// 如果是SQLITE_ENABLE_LOCKING_STYLE并且操作系统不是VXWORK就编译，否则跳过
+#endif /* SQLITE_ENABLE_LOCKING_STYLE && !OS_VXWORK */
 
 /******************* End of the flock lock implementation *********************
 ******************************************************************************/
+
 /******************************************************************************
 ************************ Begin Named Semaphore Locking ************************
-// 命名信号锁
-** Named semaphore locking is only supported on VxWorks.  
-// 只有VxWorks操作系统支持命名信号锁
+**
+** Named semaphore locking is only supported on VxWorks.
 **
 ** Semaphore locking is like dot-lock and flock in that it really only
 ** supports EXCLUSIVE locking.  Only a single process can read or write
 ** the database file at a time.  This reduces potential concurrency, but
 ** makes the lock implementation much easier.
+** 
+** 						  标记信号量锁
+** 标记信号量锁机制只在VxWorks上工作
+** 信号量锁就像dot文件锁和全文件锁一样，只支持互斥锁。
+** 只有一个进程在同一时间对文件进行读写操作。这降低了
+** 潜在的并发操作，但是使得文件锁机制变得更加简单。
 */
-// 命名信号锁就像点文件锁和聚集锁一样，实际上只支持排他锁。只有单个进程可以在同一时间对数据库文件进行读或写。
-// 这虽然减少了潜在的并发性，却使得这种锁的实现更加容易。
 #if OS_VXWORKS
 
 /*
@@ -2581,8 +2855,6 @@ static int flockClose(sqlite3_file *id) {
 ** to a non-zero value otherwise *pResOut is set to zero.  The return value
 ** is set to SQLITE_OK unless an I/O error occurs during lock checking.
 */
-// 这个程序会检查指定文件或者是其他任何进程里是否持有保留锁，如果持有保留锁，将指针*pResOout的值设为非零，否则设为0.
-// 返回值设为SQLITE_OK除非在锁检查期间发生I/O错误。
 static int semCheckReservedLock(sqlite3_file *id, int *pResOut) {
   int rc = SQLITE_OK;
   int reserved = 0;
@@ -2592,12 +2864,12 @@ static int semCheckReservedLock(sqlite3_file *id, int *pResOut) {
   
   assert( pFile );
 
-  /* Check if a thread in this process holds such a lock */     // 检查这个进程的其它线程是否持有这个锁
+  /* Check if a thread in this process holds such a lock */
   if( pFile->eFileLock>SHARED_LOCK ){
     reserved = 1;
   }
   
-  /* Otherwise see if some other process holds it. */    // 否则查看别的进程
+  /* Otherwise see if some other process holds it. */
   if( !reserved ){
     sem_t *pSem = pFile->pInode->pSem;
     struct stat statBuf;
@@ -2608,12 +2880,11 @@ static int semCheckReservedLock(sqlite3_file *id, int *pResOut) {
         rc = sqliteErrorFromPosixError(tErrno, SQLITE_IOERR_CHECKRESERVEDLOCK);
         pFile->lastErrno = tErrno;
       } else {
-        /* someone else has the lock when we are in NO_LOCK */  
-// 当我们处于未加锁状态时别的进程持有命名信号锁
+        /* someone else has the lock when we are in NO_LOCK */
         reserved = (pFile->eFileLock < SHARED_LOCK);
       }
     }else{
-      /* we could have it if we want it */    // 如果需要就可以获取
+      /* we could have it if we want it */
       sem_post(pSem);
     }
   }
@@ -2627,11 +2898,10 @@ static int semCheckReservedLock(sqlite3_file *id, int *pResOut) {
 ** Lock the file with the lock specified by parameter eFileLock - one
 ** of the following:
 **
-// 使用参数eFileLock以下值之一指定的锁对文件加锁
-**     (1) SHARED_LOCK   // 共享锁
-**     (2) RESERVED_LOCK   // 保留锁
-**     (3) PENDING_LOCK    // 未决锁
-**     (4) EXCLUSIVE_LOCK   // 排他锁
+**     (1) SHARED_LOCK
+**     (2) RESERVED_LOCK
+**     (3) PENDING_LOCK
+**     (4) EXCLUSIVE_LOCK
 **
 ** Sometimes when requesting one lock state, additional lock states
 ** are inserted in between.  The locking might fail on one of the later
@@ -2639,26 +2909,24 @@ static int semCheckReservedLock(sqlite3_file *id, int *pResOut) {
 ** still short of its goal.  The following chart shows the allowed
 ** transitions and the inserted intermediate states:
 **
-// 当请求一个锁状态的时候，额外的锁状态会插入到其中。锁定失败后会后来的转换会使它不同于开始时候的锁状态，
-但是仍能达到预期目标。以下的记录是允许的转换和插入的状态。
-**
-**    UNLOCKED -> SHARED   // 未加锁-->共享锁
-**    SHARED -> RESERVED    // 共享锁转为-->保留锁
-**    SHARED -> (PENDING) -> EXCLUSIVE   // 共享锁-->未决锁（插入）-->排他锁
-**    RESERVED -> (PENDING) -> EXCLUSIVE  // 保留锁-->未决锁（插入）-->排他锁
-**    PENDING -> EXCLUSIVE  // 未决锁-->排他锁
+**    UNLOCKED -> SHARED
+**    SHARED -> RESERVED
+**    SHARED -> (PENDING) -> EXCLUSIVE
+**    RESERVED -> (PENDING) -> EXCLUSIVE
+**    PENDING -> EXCLUSIVE
 **
 ** Semaphore locks only really support EXCLUSIVE locks.  We track intermediate
 ** lock states in the sqlite3_file structure, but all locks SHARED or
 ** above are really EXCLUSIVE locks and exclude all other processes from
 ** access the file.
 **
-// 命名信号锁实际上只支持排他锁。我们在sqlite3文件结构中追踪中间级别的锁状态，但是所有的共享锁或者以上级别的
-锁事实上都是排他锁，并且拒绝其它进程访问这个文件。
+** 信号量锁仅仅支持互斥锁，我们在sqlite3_file对象中追踪对应的锁状态
+** 发现所有的共享锁及之上的锁实际上都是互斥锁，且禁止其他进程
+** 对文件的访问。
+**
 ** This routine will only increase a lock.  Use the sqlite3OsUnlock()
 ** routine to lower a locking level.
 */
-// 这个程序只是增加一个锁。使用sqlite3的OsUnlock()程序降低锁的级别。
 static int semLock(sqlite3_file *id, int eFileLock) {
   unixFile *pFile = (unixFile*)id;
   int fd;
@@ -2666,20 +2934,20 @@ static int semLock(sqlite3_file *id, int eFileLock) {
   int rc = SQLITE_OK;
 
   /* if we already have a lock, it is exclusive.  
-  ** Just adjust level and punt on outta here. */    // 调整级别后结束程序
+  ** Just adjust level and punt on outta here. */
   if (pFile->eFileLock > NO_LOCK) {
     pFile->eFileLock = eFileLock;
     rc = SQLITE_OK;
     goto sem_end_lock;
   }
   
-  /* lock semaphore now but bail out when already locked. */     // 锁定信号，但是信号被锁定时将其释放
+  /* lock semaphore now but bail out when already locked. */
   if( sem_trywait(pSem)==-1 ){
     rc = SQLITE_BUSY;
     goto sem_end_lock;
   }
 
-  /* got it, set the type and return ok */      // 获取成功，设置类型值并返回ok
+  /* got it, set the type and return ok */
   pFile->eFileLock = eFileLock;
 
  sem_end_lock:
@@ -2693,9 +2961,6 @@ static int semLock(sqlite3_file *id, int eFileLock) {
 ** If the locking level of the file descriptor is already at or below
 ** the requested locking level, this routine is a no-op.
 */
-// 在文件描述符pFile 到eFileLok降低锁的级别 ，eFileLock必须是NO_LOCK or和SHARED_LOCK两者之一。
-// 如果文件描述符的锁定级别已经在正在请求的锁级别或以下，那么这个程序是一个空操作。
-
 static int semUnlock(sqlite3_file *id, int eFileLock) {
   unixFile *pFile = (unixFile*)id;
   sem_t *pSem = pFile->pInode->pSem;
@@ -2706,19 +2971,18 @@ static int semUnlock(sqlite3_file *id, int eFileLock) {
            pFile->eFileLock, getpid()));
   assert( eFileLock<=SHARED_LOCK );
   
-  /* no-op if possible */      // 无操作是可能的
+  /* no-op if possible */
   if( pFile->eFileLock==eFileLock ){
     return SQLITE_OK;
   }
   
-  /* shared can just be set because we always have an exclusive */     // 共享锁只能被旁置因为总有一个排他锁
-
+  /* shared can just be set because we always have an exclusive */
   if (eFileLock==SHARED_LOCK) {
     pFile->eFileLock = eFileLock;
     return SQLITE_OK;
   }
   
-  /* no, really unlock. */     // 否则就解锁   
+  /* no, really unlock. */
   if ( sem_post(pSem)==-1 ) {
     int rc, tErrno = errno;
     rc = sqliteErrorFromPosixError(tErrno, SQLITE_IOERR_UNLOCK);
@@ -2732,7 +2996,7 @@ static int semUnlock(sqlite3_file *id, int eFileLock) {
 }
 
 /*
- ** Close a file.     // 关闭文件
+ ** Close a file.
  */
 static int semClose(sqlite3_file *id) {
   if( id ){
@@ -2751,42 +3015,43 @@ static int semClose(sqlite3_file *id) {
 /*
 ** Named semaphore locking is only available on VxWorks.
 **
-// 命名信号锁只适用于VxWorks，在VxWorks下才编译
 *************** End of the named semaphore lock implementation ****************
 ******************************************************************************/
 
 
 /******************************************************************************
 *************************** Begin AFP Locking *********************************
-// 苹果文件协议锁
+**
 ** AFP is the Apple Filing Protocol.  AFP is a network filesystem found
 ** on Apple Macintosh computers - both OS9 and OSX.
 **
-// AFP是苹果文件协议，AFP是建立在苹果麦金塔什电脑，包括OS9 和OSX操作系统之上的网络文件系统。
 ** Third-party implementations of AFP are available.  But this code here
-** only works on OSX.  
-// AFP的第三方实现是有效的，但是这段代码仅仅作用于OSX系统上。
+** only works on OSX.
+**                                             AFP锁
+** AFP是Apple的文件保护机制，在Apple的macintosh计算机上为
+** 网络文件系统，包括OS9和OSX，
+**
+** AFP的第三方实现可用，但此处的代码仅仅在OSX上工作。
 */
 
 #if defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE
 /*
 ** The afpLockingContext structure contains all afp lock specific state
 */
-// afpLockingContext 结构体包含所有苹果文件协议锁特定的状态。
 typedef struct afpLockingContext afpLockingContext;
 struct afpLockingContext {
   int reserved;
-  const char *dbPath;             /* Name of the open file */     // 打开的文件名
+  const char *dbPath;             /* Name of the open file */
 };
 
 struct ByteRangeLockPB2
 {
-  unsigned long long offset;        /* offset to first byte to lock */   // 锁定第一个字节偏移量
-  unsigned long long length;        /* nbr of bytes to lock */      // 锁定的字节数
-  unsigned long long retRangeStart; /* nbr of 1st byte locked if successful */      // 成功锁定nbr的第一个字节
-  unsigned char unLockFlag;         /* 1 = unlock, 0 = lock */      // 未加锁置为1，锁定置为0
-  unsigned char startEndFlag;       /* 1=rel to end of fork, 0=rel to start */    // 端交叉结束置为1，开始置为0
-  int fd;                           /* file desc to assoc this lock with */    // 文件用关联文件名扩展描述这个锁
+  unsigned long long offset;        /* offset to first byte to lock */
+  unsigned long long length;        /* nbr of bytes to lock */
+  unsigned long long retRangeStart; /* nbr of 1st byte locked if successful */
+  unsigned char unLockFlag;         /* 1 = unlock, 0 = lock */
+  unsigned char startEndFlag;       /* 1=rel to end of fork, 0=rel to start */
+  int fd;                           /* file desc to assoc this lock with */
 };
 
 #define afpfsByteRangeLock2FSCTL        _IOWR('z', 23, struct ByteRangeLockPB2)
@@ -2794,16 +3059,18 @@ struct ByteRangeLockPB2
 /*
 ** This is a utility for setting or clearing a bit-range lock on an
 ** AFP filesystem.
-// 这是一个用于在AFP文件系统中设置或清除比特范围内的锁的实用程序
 ** 
-** Return SQLITE_OK on success, SQLITE_BUSY on failure. 
-*/     成功返回SQLITE_OK，失败返回SQLITE_BUSY
+** Return SQLITE_OK on success, SQLITE_BUSY on failure.
+** 
+** 用于设置和清除AFP文件系统中的置位。
+** 成功时返回SQLITE_OK,失败是返回SQLITE_BUSY
+*/
 static int afpSetLock(
-  const char *path,         /* Name of the file to be locked or unlocked */   // 锁定或未锁定文件名称
-  unixFile *pFile,           /* Open file descriptor on path */     // 在路径中打开文件描述符
-  unsigned long long offset,     /* First byte to be locked */     // 锁定第一个字节
-  unsigned long long length,     /* Number of bytes to lock */      // 锁定的字节数
-  int setLockFlag                /* True to set lock.  False to clear lock */    // 成功就设置锁，失败则清除锁
+  const char *path,              /* Name of the file to be locked or unlocked */
+  unixFile *pFile,               /* Open file descriptor on path */
+  unsigned long long offset,     /* First byte to be locked */
+  unsigned long long length,     /* Number of bytes to lock */
+  int setLockFlag                /* True to set lock.  False to clear lock */
 ){
   struct ByteRangeLockPB2 pb;
   int err;
@@ -2828,8 +3095,7 @@ static int afpSetLock(
 #else
     rc = sqliteErrorFromPosixError(tErrno,
                     setLockFlag ? SQLITE_IOERR_LOCK : SQLITE_IOERR_UNLOCK);
-#endif /* SQLITE_IGNORE_AFP_LOCK_ERRORS */   
-// 如果是SQLITE_IGNORE_AFP_LOCK_ERRORS就编译，否则跳过
+#endif /* SQLITE_IGNORE_AFP_LOCK_ERRORS */
     if( IS_LOCK_ERROR(rc) ){
       pFile->lastErrno = tErrno;
     }
@@ -2845,8 +3111,6 @@ static int afpSetLock(
 ** to a non-zero value otherwise *pResOut is set to zero.  The return value
 ** is set to SQLITE_OK unless an I/O error occurs during lock checking.
 */
-// 这个程序会检查指定文件或者是其他任何进程里是否持有保留锁，如果持有保留锁，将指针*pResOout的值设为非零，
-否则设为0.返回值设为SQLITE_OK除非在锁检查期间发生I/O错误。
 static int afpCheckReservedLock(sqlite3_file *id, int *pResOut){
   int rc = SQLITE_OK;
   int reserved = 0;
@@ -2861,8 +3125,7 @@ static int afpCheckReservedLock(sqlite3_file *id, int *pResOut){
     *pResOut = 1;
     return SQLITE_OK;
   }
-  unixEnterMutex(); /* Because pFile->pInode is shared across threads */  
-// pFile->pInode在线程之间共享
+  unixEnterMutex(); /* Because pFile->pInode is shared across threads */
   
   /* Check if a thread in this process holds such a lock */
   if( pFile->pInode->eFileLock>SHARED_LOCK ){
@@ -2872,16 +3135,14 @@ static int afpCheckReservedLock(sqlite3_file *id, int *pResOut){
   /* Otherwise see if some other process holds it.
    */
   if( !reserved ){
-    /* lock the RESERVED byte */     // 锁定保留状态字节
+    /* lock the RESERVED byte */
     int lrc = afpSetLock(context->dbPath, pFile, RESERVED_BYTE, 1,1);  
     if( SQLITE_OK==lrc ){
       /* if we succeeded in taking the reserved lock, unlock it to restore
-      ** the original state */  
-// 如果成功获得保留锁，则解锁并让它恢复到最初状态
+      ** the original state */
       lrc = afpSetLock(context->dbPath, pFile, RESERVED_BYTE, 1, 0);
     } else {
-      /* if we failed to get the lock then someone else must have it */   
-// 如果获取保留锁失败则表明别的进程持有它
+      /* if we failed to get the lock then someone else must have it */
       reserved = 1;
     }
     if( IS_LOCK_ERROR(lrc) ){
@@ -2900,11 +3161,10 @@ static int afpCheckReservedLock(sqlite3_file *id, int *pResOut){
 ** Lock the file with the lock specified by parameter eFileLock - one
 ** of the following:
 **
-// 使用参数eFileLock以下值之一指定的锁对文件加锁
-**     (1) SHARED_LOCK   //共享锁
-**     (2) RESERVED_LOCK   //保留锁
-**     (3) PENDING_LOCK    //未决锁
-**     (4) EXCLUSIVE_LOCK   //排他锁
+**     (1) SHARED_LOCK
+**     (2) RESERVED_LOCK
+**     (3) PENDING_LOCK
+**     (4) EXCLUSIVE_LOCK
 **
 ** Sometimes when requesting one lock state, additional lock states
 ** are inserted in between.  The locking might fail on one of the later
@@ -2912,19 +3172,15 @@ static int afpCheckReservedLock(sqlite3_file *id, int *pResOut){
 ** still short of its goal.  The following chart shows the allowed
 ** transitions and the inserted intermediate states:
 **
-// 当请求一个锁状态的时候，额外的锁状态会插入到其中。锁定失败后会后来的转换会使它不同于开始时候的锁状态，
-但是仍能达到预期目标。以下的记录是允许的转换和插入的状态。
-**
-**    UNLOCKED -> SHARED   //未加锁-->共享锁
-**    SHARED -> RESERVED    //共享锁转为-->保留锁
-**    SHARED -> (PENDING) -> EXCLUSIVE   //共享锁-->未决锁（插入）-->排他锁
-**    RESERVED -> (PENDING) -> EXCLUSIVE  //保留锁-->未决锁（插入）-->排他锁
-**    PENDING -> EXCLUSIVE  //未决锁-->排他锁
+**    UNLOCKED -> SHARED
+**    SHARED -> RESERVED
+**    SHARED -> (PENDING) -> EXCLUSIVE
+**    RESERVED -> (PENDING) -> EXCLUSIVE
+**    PENDING -> EXCLUSIVE
 **
 ** This routine will only increase a lock.  Use the sqlite3OsUnlock()
 ** routine to lower a locking level.
 */
-// 这个程序只是增加一个锁。使用sqlite3的OsUnlock()程序降低锁的级别。
 static int afpLock(sqlite3_file *id, int eFileLock){
   int rc = SQLITE_OK;
   unixFile *pFile = (unixFile*)id;
@@ -2939,37 +3195,36 @@ static int afpLock(sqlite3_file *id, int eFileLock){
   /* If there is already a lock of this type or more restrictive on the
   ** unixFile, do nothing. Don't use the afp_end_lock: exit path, as
   ** unixEnterMutex() hasn't been called yet.
+  **
+  ** 如果unixFile中已经存在这种或者更加严格的锁，则不产生动作，
+  ** 不使用afp_end_lock:离开当前路径，就像unixEnterMutex()函数没有被调用。
   */
-// 如果已经有一个这种类型的锁或unixFile有更多限制性，不做任何操作。不要使用afp_end_lock:退出路径,因为unixEnterMutex()尚未被调用。
   if( pFile->eFileLock>=eFileLock ){
     OSTRACE(("LOCK    %d %s ok (already held) (afp)\n", pFile->h,
            azFileLock(eFileLock)));
     return SQLITE_OK;
   }
 
-  /* Make sure the locking sequence is correct 
+  /* Make sure the locking sequence is correct
   **  (1) We never move from unlocked to anything higher than shared lock.
   **  (2) SQLite never explicitly requests a pendig lock.
   **  (3) A shared lock is always held when a reserve lock is requested.
   */
-// 确保锁定顺序是正确的
-（1）从未加锁状态只能转移到共享锁
-（2）SQLite不会明确请求一个未决锁
-（3）当获取到保留锁时，共享锁也一直不能释放
   assert( pFile->eFileLock!=NO_LOCK || eFileLock==SHARED_LOCK );
   assert( eFileLock!=PENDING_LOCK );
   assert( eFileLock!=RESERVED_LOCK || pFile->eFileLock==SHARED_LOCK );
   
   /* This mutex is needed because pFile->pInode is shared across threads
-  */    
-// 这种互斥是必要的，因为pFile->pInode在线程之间是共享的
+  ** 再此需要互斥锁，因为pFile->pInode需要在线程间共享
+  */
   unixEnterMutex();
   pInode = pFile->pInode;
 
   /* If some thread using this PID has a lock via a different unixFile*
   ** handle that precludes the requested lock, return BUSY.
-  */    
-// 如果有线程使用拥有一个不同的unixFile*操作的进程ID去排除请求的锁，则返回BUSY。
+  **
+  ** 如果一些线程借助不同的unixFile指针排除所请求，返回BUSY
+  */
   if( (pFile->eFileLock!=pInode->eFileLock && 
        (pInode->eFileLock>=PENDING_LOCK || eFileLock>SHARED_LOCK))
      ){
@@ -2980,8 +3235,9 @@ static int afpLock(sqlite3_file *id, int eFileLock){
   /* If a SHARED lock is requested, and some thread using this PID already
   ** has a SHARED or RESERVED lock, then increment reference counts and
   ** return SQLITE_OK.
-  */   
-// 如果要请求一个共享锁，并且一些使用这个进程ID的线程已经持有一个共享锁或者保留锁，那么只需增加引用计数并且返回SQLITE_OK。
+  ** 如果请求一个共享锁，而且其他线程已经在使用这个PID占有
+  ** 共享锁或是预留锁，然后增加引用计数并返回SQLITE_OK.
+  */
   if( eFileLock==SHARED_LOCK && 
      (pInode->eFileLock==SHARED_LOCK || pInode->eFileLock==RESERVED_LOCK) ){
     assert( eFileLock==SHARED_LOCK );
@@ -2996,8 +3252,7 @@ static int afpLock(sqlite3_file *id, int eFileLock){
   /* A PENDING lock is needed before acquiring a SHARED lock and before
   ** acquiring an EXCLUSIVE lock.  For the SHARED lock, the PENDING will
   ** be released.
-  */  
-// 在获得共享锁和排他锁之前，需要保持未决锁。获得共享锁之后，未决锁就会被释放掉
+  */
   if( eFileLock==SHARED_LOCK 
       || (eFileLock==EXCLUSIVE_LOCK && pFile->eFileLock<PENDING_LOCK)
   ){
@@ -3012,7 +3267,6 @@ static int afpLock(sqlite3_file *id, int eFileLock){
   /* If control gets to this point, then actually go ahead and make
   ** operating system calls for the specified lock.
   */
-// 如果控制到这个点上，那么继续让操作系统调用指定的锁。
   if( eFileLock==SHARED_LOCK ){
     int lrc1, lrc2, lrc1Errno = 0;
     long lk, mask;
@@ -3021,8 +3275,11 @@ static int afpLock(sqlite3_file *id, int eFileLock){
     assert( pInode->eFileLock==0 );
         
     mask = (sizeof(long)==8) ? LARGEST_INT64 : 0x7fffffff;
-    /* Now get the read-lock SHARED_LOCK */      // 获取共享锁的读锁
-    /* note that the quality of the randomness doesn't matter that much */      // 需要注意的是随机性的质量是无关紧要的
+    /* Now get the read-lock SHARED_LOCK */
+    /* note that the quality of the randomness doesn't matter that much 
+	**
+	** 现在获取只读的共享锁
+	** 随机性质量并不重要*/
     lk = random(); 
     pInode->sharedByte = (lk & mask)%(SHARED_SIZE - 1);
     lrc1 = afpSetLock(context->dbPath, pFile, 
@@ -3030,7 +3287,7 @@ static int afpLock(sqlite3_file *id, int eFileLock){
     if( IS_LOCK_ERROR(lrc1) ){
       lrc1Errno = pFile->lastErrno;
     }
-    /* Drop the temporary PENDING lock */     // 释放临时的未决锁
+    /* Drop the temporary PENDING lock */
     lrc2 = afpSetLock(context->dbPath, pFile, PENDING_BYTE, 1, 0);
     
     if( IS_LOCK_ERROR(lrc1) ) {
@@ -3048,44 +3305,40 @@ static int afpLock(sqlite3_file *id, int eFileLock){
       pInode->nShared = 1;
     }
   }else if( eFileLock==EXCLUSIVE_LOCK && pInode->nShared>1 ){
-    /* We are trying for an exclusive lock but another thread in this  
+    /* We are trying for an exclusive lock but another thread in this
      ** same process is still holding a shared lock. */
-// 请求一个排他锁，而这时候同一个进程的其他线程仍然持有共享锁
     rc = SQLITE_BUSY;
   }else{
     /* The request was for a RESERVED or EXCLUSIVE lock.  It is
     ** assumed that there is a SHARED or greater lock on the file
     ** already.
-*/   
-// 请求保留锁或者排他锁。假设这个文件已经存在一个共享锁或者更高级别的锁。
+    */
     int failed = 0;
     assert( 0!=pFile->eFileLock );
     if (eFileLock >= RESERVED_LOCK && pFile->eFileLock < RESERVED_LOCK) {
-        /* Acquire a RESERVED lock */     // 获取保留锁
+        /* Acquire a RESERVED lock */
         failed = afpSetLock(context->dbPath, pFile, RESERVED_BYTE, 1,1);
       if( !failed ){
         context->reserved = 1;
       }
     }
     if (!failed && eFileLock == EXCLUSIVE_LOCK) {
-      /* Acquire an EXCLUSIVE lock */    // 获取排他锁
+      /* Acquire an EXCLUSIVE lock */
         
       /* Remove the shared lock before trying the range.  we'll need to 
       ** reestablish the shared lock if we can't get the  afpUnlock
-      */   
-// 获取之前要删除共享锁，如果没有得到AFP锁，就需要重新请求共享锁。
+      */
       if( !(failed = afpSetLock(context->dbPath, pFile, SHARED_FIRST +
                          pInode->sharedByte, 1, 0)) ){
         int failed2 = SQLITE_OK;
-        /* now attemmpt to get the exclusive lock range */    // 再尝试请求排他锁
+        /* now attemmpt to get the exclusive lock range */
         failed = afpSetLock(context->dbPath, pFile, SHARED_FIRST, 
                                SHARED_SIZE, 1);
         if( failed && (failed2 = afpSetLock(context->dbPath, pFile, 
                        SHARED_FIRST + pInode->sharedByte, 1, 1)) ){
           /* Can't reestablish the shared lock.  Sqlite can't deal, this is
-          ** a critical I/O error  
-          */   
-// 不能重建共享锁，这是一个Sqlite不能处理的I/O错误
+          ** a critical I/O error
+          */
           rc = ((failed & SQLITE_IOERR) == SQLITE_IOERR) ? failed2 : 
                SQLITE_IOERR_LOCK;
           goto afp_end_lock;
@@ -3121,9 +3374,6 @@ afp_end_lock:
 ** If the locking level of the file descriptor is already at or below
 ** the requested locking level, this routine is a no-op.
 */
-// 在文件描述符pFile 到eFileLok降低锁的级别 ，eFileLock必须是NO_LOCK or和SHARED_LOCK两者之一。
-如果文件描述符的锁定级别已经在正在请求的锁级别或以下，那么这个程序是一个空操作。
-
 static int afpUnlock(sqlite3_file *id, int eFileLock) {
   int rc = SQLITE_OK;
   unixFile *pFile = (unixFile*)id;
@@ -3154,16 +3404,15 @@ static int afpUnlock(sqlite3_file *id, int eFileLock) {
     
 #ifdef SQLITE_DEBUG
     /* When reducing a lock such that other processes can start
-    ** reading the database file again, make sure that the
+    ** reading the database file again, make sure that the                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+
+
     ** transaction counter was updated if any part of the database
     ** file changed.  If the transaction counter is not updated,
     ** other connections to the same file might not realize that
     ** the file has changed and hence might not know to flush their
     ** cache.  The use of a stale cache can lead to database corruption.
-*/
-// 当锁减少至其它进程可以再读数据库文件时，确保数据库文件有任何变动都要更新  事务计数器。如果事务计数器
-// 没有更新，那么访问这个文件的其它连接就不能识别文件的改变，因此可能不会刷新它们的缓存。使用旧的缓存会导
-// 致数据库损坏。
+    */
     assert( pFile->inNormalWrite==0
            || pFile->dbUpdate==0
            || pFile->transCntrChng==1 );
@@ -3173,7 +3422,7 @@ static int afpUnlock(sqlite3_file *id, int eFileLock) {
     if( pFile->eFileLock==EXCLUSIVE_LOCK ){
       rc = afpSetLock(context->dbPath, pFile, SHARED_FIRST, SHARED_SIZE, 0);
       if( rc==SQLITE_OK && (eFileLock==SHARED_LOCK || pInode->nShared>1) ){
-        /* only re-establish the shared lock if necessary */   如果有必要就只能重建共享锁
+        /* only re-establish the shared lock if necessary */
         int sharedLockByte = SHARED_FIRST+pInode->sharedByte;
         rc = afpSetLock(context->dbPath, pFile, sharedLockByte, 1, 1);
       } else {
@@ -3198,9 +3447,7 @@ static int afpUnlock(sqlite3_file *id, int eFileLock) {
     /* Decrement the shared lock counter.  Release the lock using an
     ** OS call only when all threads in this same process have released
     ** the lock.
-*/       
-// 共享锁计数器进行递减操作。当且仅当同一进程中的所有线程都被释放掉
-      // 共享锁，使用一个操作系统调用释放该锁。
+    */
     unsigned long long sharedLockByte = SHARED_FIRST+pInode->sharedByte;
     pInode->nShared--;
     if( pInode->nShared==0 ){
@@ -3230,7 +3477,8 @@ static int afpUnlock(sqlite3_file *id, int eFileLock) {
 }
 
 /*
-** Close a file & cleanup AFP specific locking context     // 关闭一个文件，并清理AFP特定的锁记录
+** Close a file & cleanup AFP specific locking context 
+** 关闭文件，清除所有的AFP特殊锁结构
 */
 static int afpClose(sqlite3_file *id) {
   int rc = SQLITE_OK;
@@ -3243,9 +3491,7 @@ static int afpClose(sqlite3_file *id) {
       ** yet because that would clear those locks.  Instead, add the file
       ** descriptor to pInode->aPending.  It will be automatically closed when
       ** the last lock is cleared.
-      */  
-// 如果还有未完成的锁，清理完这些锁事前不要关闭文件。相反,添加文件
-// 描述符pInode - >a Pending。它将在最后一个锁被清理掉之后自动关闭。
+      */
       setPendingFd(pFile);
     }
     releaseInodeInfo(pFile);
@@ -3257,21 +3503,26 @@ static int afpClose(sqlite3_file *id) {
 }
 
 #endif /* defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE */
-// 如果是SQLITE_ENABLE_LOCKING_STYLE并且操作系统是APPLE就编译，否则跳过
 /*
 ** The code above is the AFP lock implementation.  The code is specific
 ** to MacOSX and does not work on other unix platforms.  No alternative
 ** is available.  If you don't compile for a mac, then the "unix-afp"
 ** VFS is not available.
-**   
-// 以上代码是AFP锁的实现，它是MacOSX操作系统特有的，不适合其它的unix平台。没有别的选择，如果不用mac编译，
-那么unix-afp的虚拟文件系统就不可用。
+**
+** 以上的代码主要是AFP锁机制的实现，	是为MacOSX设计，不能
+** 在其他的unix平台上工作，没有其他可以选择的方式。如果你不
+** 是为mac编译，然后"unix-afp"选项就不用选择。
+**
 ********************* End of the AFP lock implementation **********************
 ******************************************************************************/
 
 /******************************************************************************
-*************************** Begin NFS Locking ********************************/
-// 网络系统文件锁
+*************************** Begin NFS Locking *******************************
+**
+**                                                NFS锁实现
+**
+*/
+
 #if defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE
 /*
  ** Lower the locking level on file descriptor pFile to eFileLock.  eFileLock
@@ -3289,41 +3540,50 @@ static int nfsUnlock(sqlite3_file *id, int eFileLock){
 ** The code above is the NFS lock implementation.  The code is specific
 ** to MacOSX and does not work on other unix platforms.  No alternative
 ** is available.  
-// 以上代码是AFP锁的实现，它是MacOSX操作系统特有的，不适合其它的unix平台。没有别的选择，如果不用mac编译，
-那么unix-afp的虚拟文件系统就不可用。
+**
+** 以上的代码就是NFS锁实现，主要是为MacOSX服务，
+** 不能在其他的unix平台工作，也没有其他可以选择的方法
 **
 ********************* End of the NFS lock implementation **********************
 ******************************************************************************/
+
 /******************************************************************************
 **************** Non-locking sqlite3_file methods *****************************
+**  
+**                              sqlite3_file非锁定方法
 **
 ** The next division contains implementations for all methods of the 
 ** sqlite3_file object other than the locking methods.  The locking
 ** methods were defined in divisions above (one locking method per
 ** division).  Those methods that are common to all locking modes
 ** are gather together into this division.
-下一个部分包含除锁定方法外所有sqlite3文件对象方法的实现。锁定方法已在以上部分
-中定义（一个部分一个锁定方法）。那些对所有锁定模式共同的方法在这个部分聚集在一
-起
+**
+** 接下来的这个部分包含了sqlite3_file对象除了锁定处理之外的操作，
+** 锁定的方法主要是在此前的部分定义(每种锁定方式都是单独一个
+** 部分)。这些方法中公共部分组成了这一节。
 */
 
 /*
 ** Seek to the offset passed as the second argument, then read cnt 
 ** bytes into pBuf. Return the number of bytes actually read.
-寻求偏移量作为第二个参数传递，然后读取cnt字节到pBuf中。返回实际读取的字节数。
 **
 ** NB:  If you define USE_PREAD or USE_PREAD64, then it might also
 ** be necessary to define _XOPEN_SOURCE to be 500.  This varies from
 ** one system to another.  Since SQLite does not define USE_PREAD
 ** any any form by default, we will not attempt to define _XOPEN_SOURCE.
 ** See tickets #2741 and #2681.
-注：如果你定义USE_PREAD或者USE_PREAD64，那么它可能也有必要定义_XOPEN_SOURCE为
-500。从一个系统到另一个系统这个不同。因为SQLite在默认情况下不定义USE_PREAD任何
-形式，我们不会试图定义_XOPEN_SOURCE。看标签#2741到#2681。
 **
 ** To avoid stomping the errno value on a failed read the lastErrno value
 ** is set before returning.
-为了避免errno值的读取失败，lastErrno值在返回前被设定。
+**
+** 寻找第二个参数偏移地址的传递值，然后将读取的cnt字节转换为pBuf
+** 对象，返回实际读取的字节数。
+** 
+** 注意:如果你有定义USE_PREAD或USE_PREAD64，那么必须定义_XOPEN_SOURCE为500
+** 这个在不同系统之间不同。因为SQLite在任何情况下都没有定义USE_PREAD
+** 我们以后也不会定义_XOPEN_SOURCE，详情见#2741和@2681
+**
+** 为了避免存储读错误时的错误值，在存储前需要存储最后一个错误值
 */
 static int seekAndRead(unixFile *id, sqlite3_int64 offset, void *pBuf, int cnt){
   int got;
@@ -3332,6 +3592,8 @@ static int seekAndRead(unixFile *id, sqlite3_int64 offset, void *pBuf, int cnt){
   i64 newOffset;
 #endif
   TIMER_START;
+  assert( cnt==(cnt&0x1ffff) );
+  cnt &= 0x1ffff;
   do{
 #if defined(USE_PREAD)
     got = osPread(id->h, pBuf, cnt, offset);
@@ -3375,8 +3637,10 @@ static int seekAndRead(unixFile *id, sqlite3_int64 offset, void *pBuf, int cnt){
 ** Read data from a file into a buffer.  Return SQLITE_OK if all
 ** bytes were read successfully and SQLITE_IOERR if anything goes
 ** wrong.
-从文件中读取数据到缓冲区。如果所有字节读取成功返回SQLITE_OK，如果出错返回
-SQLITE_IOERR。
+**
+** 将文件中的数据读入缓冲区。 如果所有字节成功读取
+** 返回SQLITE_OK，读取错误返回SQLITE_IOERR
+**
 */
 static int unixRead(
   sqlite3_file *id, 
@@ -3389,9 +3653,7 @@ static int unixRead(
   assert( id );
 
   /* If this is a database file (not a journal, master-journal or temp
-  ** file), the bytes in the locking range should never be read or written. 
-如果这是一个数据库文件（不是一个日志，主日志或者临时文件），锁定范围的字节不能
-读或写*/
+  ** file), the bytes in the locking range should never be read or written. */
 #if 0
   assert( pFile->pUnused==0
        || offset>=PENDING_BYTE+512
@@ -3403,12 +3665,11 @@ static int unixRead(
   if( got==amt ){
     return SQLITE_OK;
   }else if( got<0 ){
-    /* lastErrno set by seekAndRead lastErrno值被seekAndRead设定*/
+    /* lastErrno set by seekAndRead */
     return SQLITE_IOERR_READ;
   }else{
-    pFile->lastErrno = 0; /* not a system error 不是系统错误*/
-    /* Unread parts of the buffer must be zero-filled 未读的缓冲区部分必须被用0
-    填充*/
+    pFile->lastErrno = 0; /* not a system error */
+    /* Unread parts of the buffer must be zero-filled */
     memset(&((char*)pBuf)[got], 0, amt-got);
     return SQLITE_IOERR_SHORT_READ;
   }
@@ -3420,15 +3681,20 @@ static int unixRead(
 **
 ** To avoid stomping the errno value on a failed write the lastErrno value
 ** is set before returning.
-用id->offset寻找偏移，然后读取cnt字节到pBuf中。
-返回实际读取的字节数。更新偏移。
-为了避免errno值的写入失败，lastErrno值在返回前被设定
+**
+**在id-> offset中寻找偏移量，然后将cnt个字节读入pBuf。 
+**返回实际读取的字节数。 更新偏移量。
+**
+**为了避免在写入失败时破坏errno值，在返回之前设置lastErrno值。
+**
 */
 static int seekAndWrite(unixFile *id, i64 offset, const void *pBuf, int cnt){
   int got;
 #if (!defined(USE_PREAD) && !defined(USE_PREAD64))
   i64 newOffset;
 #endif
+  assert( cnt==(cnt&0x1ffff) );
+  cnt &= 0x1ffff;
   TIMER_START;
 #if defined(USE_PREAD)
   do{ got = osPwrite(id->h, pBuf, cnt, offset); }while( got<0 && errno==EINTR );
@@ -3462,7 +3728,6 @@ static int seekAndWrite(unixFile *id, i64 offset, const void *pBuf, int cnt){
 /*
 ** Write data from a buffer into a file.  Return SQLITE_OK on success
 ** or some other error code on failure.
-从缓冲区写入数据到一个文件中。成功返回SQLITE_OK或者失败返回一些其他错误代码。
 */
 static int unixWrite(
   sqlite3_file *id, 
@@ -3476,9 +3741,7 @@ static int unixWrite(
   assert( amt>0 );
 
   /* If this is a database file (not a journal, master-journal or temp
-  ** file), the bytes in the locking range should never be read or written. 
-如果这是一个数据库文件（不是一个日志，主文件或者临时文件），锁定范围的字节不能
-读或写*/
+  ** file), the bytes in the locking range should never be read or written. */
 #if 0
   assert( pFile->pUnused==0
        || offset>=PENDING_BYTE+512
@@ -3492,12 +3755,9 @@ static int unixWrite(
   ** normal database file) then record the fact that the database
   ** has changed.  If the transaction counter is modified, record that
   ** fact too.
-如果我们正常写入一个数据库文件（而不是做一个热日志回滚或者写入到一些不同于正常
-数据库文件的文件）那么记录数据库改变的事实。如果事务计数器被修改，也记录这个事
-实。
   */
   if( pFile->inNormalWrite ){
-    pFile->dbUpdate = 1;  /* The database has been modified 数据库被修改*/
+    pFile->dbUpdate = 1;  /* The database has been modified */
     if( offset<=24 && offset+amt>=27 ){
       int rc;
       char oldCntr[4];
@@ -3536,7 +3796,10 @@ static int unixWrite(
 /*
 ** Count the number of fullsyncs and normal syncs.  This is used to test
 ** that syncs and fullsyncs are occurring at the right times.
-计算fullsyncs和正常syncs的数量，这用来测试syncs和fullsyncs在正确的时间发生。
+**
+** 记录全同步和正常同步的次数，用于测试同步和全同步
+** 正确进行的次数
+** 
 */
 int sqlite3_sync_count = 0;
 int sqlite3_fullsync_count = 0;
@@ -3547,9 +3810,12 @@ int sqlite3_fullsync_count = 0;
 ** Others do no.  To be safe, we will stick with the (slightly slower)
 ** fsync(). If you know that your system does support fdatasync() correctly,
 ** then simply compile with -Dfdatasync=fdatasync
-我们不相信系统提供一个有效的fdatasync()。有些是这样的，其他的不是。为了安全起
-见，我们将坚持（稍慢）fsync()。如果你知道你的系统确实正确的支持fdatasync()，那
-么用-Dfdatasync=fdatasync简单的编译。
+**
+** 我们不信任系统提供的fdarasync()函数，有些数据库认为可以
+** 但是也有些不信任，为了达到更高的安全性，我们始终使用
+** (虽然表现慢了一些)fsync()。如果你确定系统支持的fdatasync()始终
+** 正确，那么就编译为-Dfdatasync=fdatasync.
+**
 */
 #if !defined(fdatasync)
 # define fdatasync fsync
@@ -3559,8 +3825,10 @@ int sqlite3_fullsync_count = 0;
 ** Define HAVE_FULLFSYNC to 0 or 1 depending on whether or not
 ** the F_FULLFSYNC macro is defined.  F_FULLFSYNC is currently
 ** only available on Mac OS X.  But that could change.
-定义HAVE_FULLFSYNC为0或1取决于F_FULLFSYNC宏是否被定义。F_FULLFSYNC目前仅在
-Mac OS X上可用。但可能会改变。
+**
+** 定义HAVE_FULLSYNC值为0或1取决于定义的F_FULLFSYNC宏。
+** 但是F_FULLFSYNC宏仅在Mac OS X上可用，但有可能被改变。
+**
 */
 #ifdef F_FULLFSYNC
 # define HAVE_FULLFSYNC 1
@@ -3573,17 +3841,19 @@ Mac OS X上可用。但可能会改变。
 ** The fsync() system call does not work as advertised on many
 ** unix systems.  The following procedure is an attempt to make
 ** it work better.
-在很多unix系统上，fsync()系统调用不像广告一样起作用。下面的程序是为了让
-它工作的更好。
 **
 ** The SQLITE_NO_SYNC macro disables all fsync()s.  This is useful
 ** for testing when we want to run through the test suite quickly.
 ** You are strongly advised *not* to deploy with SQLITE_NO_SYNC
 ** enabled, however, since with SQLITE_NO_SYNC enabled, an OS crash
 ** or power failure will likely corrupt the database file.
-SQLITE_NO_SYNC宏禁用所有fsync()。当我们想快速的运行测试套件的时候，这对测试是
-有用的。强烈的建议不在SQLITE_NO_SYNC启用下进行配置，因为启用了SQLITE_NO_SYNC
-后，一个操作系统崩溃或者电源故障可能会毁坏数据库文件。
+**
+** fsync()系统调用在一些unix系统下并不像宣传的那样工作。以下的操作
+** 旨在让它工作的更好
+** SQLITE_NO_SYNC宏禁用所有的fsync()函数，当我们在测试时希望快速运行
+** 通过测试套件时是有用的。强烈建议不要在部署的时候使用，但是
+** 如果你在部署的时候启用了，一次操作系统出错或者是断电都会导致
+** 数据库文件出错。
 **
 ** SQLite sets the dataOnly flag if the size of the file is unchanged.
 ** The idea behind dataOnly is that it should only write the file content
@@ -3597,15 +3867,15 @@ SQLITE_NO_SYNC宏禁用所有fsync()。当我们想快速的运行测试套件�
 ** as far as SQLite is concerned, an fdatasync() is always adequate.
 ** So, we always use fdatasync() if it is available, regardless of
 ** the value of the dataOnly flag.
-如果文件的大小不变，SQLite设置dataOnly标志。
-dataOnly背后的想法是它应该只写文件内容到磁盘，而不是索引节点。由于文件大小是索
-引节的一部分，如果文件大小没变，我们只设置dataOnly。但是，
-Ted Ts'o告诉我们，fdatasync()也将写索引节点，如果文件大小已经改变。fdatasync()
-和fsync()之间唯一真正的区别，Ted告诉我们，是fdatasync()不会刷新索引节点，如果
-mtime或者所有者或者其他索引节点属性已经改变了。
-我们只关心文件大小，不是其他文件属性，所以对SQLite而言，一个fdatasync()总是足够
-的。
-所以我们总是使用fdatasync()，如果它是可用的，不管dataOnly标志的值。
+**
+** SQLite在文件大小没有改变的情况下设置dataOnly标志。
+** dataOnly背后的思想是只应该将文件内容写到磁盘，
+** 而不是iNode中，由于文件大小是iNode的一部分，所以
+** 我们仅设置dataOnly大小。然而，Ted Ts告诉我们fdatasync()
+** 在文件大小改变的情况下写iNode。fdatasync()和fsync()之间
+** 的实质区别在于mtime或拥有者或其他iNode属性已经被
+** 改变，就SQLite而言，fdatasync()总是够用的，所以在fdatasync()
+** 可用的情况下就直接使用，而不管dataOnly标志。
 */
 static int full_fsync(int fd, int fullSync, int dataOnly){
   int rc;
@@ -3613,8 +3883,11 @@ static int full_fsync(int fd, int fullSync, int dataOnly){
   /* The following "ifdef/elif/else/" block has the same structure as
   ** the one below. It is replicated here solely to avoid cluttering 
   ** up the real code with the UNUSED_PARAMETER() macros.
-  下面的，"ifdef/elif/else/" 块如下面一个块一样具有相同的结构。它单独地复制在
-  这里，避免弄乱真正的带UNUSED_PARAMETER()宏的代码
+  **
+  ** 接下来的"ifdef/elif/else/"块具有相同的结构，
+  ** 在这里的复制只是为了避免使用UNUSED_PARAMETER()
+  ** 宏时出现混乱
+  **
   */
 #ifdef SQLITE_NO_SYNC
   UNUSED_PARAMETER(fd);
@@ -3630,8 +3903,10 @@ static int full_fsync(int fd, int fullSync, int dataOnly){
   /* Record the number of times that we do a normal fsync() and 
   ** FULLSYNC.  This is used during testing to verify that this procedure
   ** gets called with the correct arguments.
-     记录我们做一个正常的fsync()和FULLSYNC的次数。这是在测试期间使用来验证这个
-     过程以正确的参数调用。
+  **
+  ** 记录fsync() FULLSYNC正常执行的次数。这个在测试期间
+  ** 验证正确参数调用情况。
+  **
   */
 #ifdef SQLITE_TEST
   if( fullSync ) sqlite3_fullsync_count++;
@@ -3640,7 +3915,6 @@ static int full_fsync(int fd, int fullSync, int dataOnly){
 
   /* If we compiled with the SQLITE_NO_SYNC flag, then syncing is a
   ** no-op
-    如果我们用SQLITE_NO_SYNC标志编译，那么同步是一个空操作。
   */
 #ifdef SQLITE_NO_SYNC
   rc = SQLITE_OK;
@@ -3657,19 +3931,22 @@ static int full_fsync(int fd, int fullSync, int dataOnly){
   ** and (for now) ignore the overhead of a superfluous fcntl call.  
   ** It'd be better to detect fullfsync support once and avoid 
   ** the fcntl call every time sync is called.
-     如果FULLFSYNC失败，回退尝试一个fsync()。
-     fullfsync在本地文件系统（在OSX上）失败，是不该可能的，所以失败表明
-    FULLFSYNC不支持这个文件系统。所以，尝试一个fsync，（现在）忽略多余的fcntl
-    调用开销。
-     最好检测fullfsync支持一次，避免每次fcntl调用sync被调用。
+  **
+  ** 如果FULLFSYNC失败，则回退尝试使用fsync().在本地文件系统中
+  ** fullsync不可能失败，所以FULLFSYNC失败表明它不适合这个文件系统
+  ** 所以，对于fsync和一个多余的fcntl调用开销比较起来是可行的
+  ** 这可以是一个检测fullfsync支持方法，从而避免每次调用sync时
+  ** 对fcntl的调用。
+  **
   */
   if( rc ) rc = fsync(fd);
 
 #elif defined(__APPLE__)
   /* fdatasync() on HFS+ doesn't yet flush the file size if it changed correctly
   ** so currently we default to the macro that redefines fdatasync to fsync
-在HFS+上，fdatasync()还没有刷新文件大小，如果它正确地改变。
-所以目前我们默认宏，其重新定义fdatasync到fsync。
+  **
+  ** fdatasync()在HFS+上没有文件大小刷新设置，如果正确的改变
+  ** 所以我们默认的宏重新定义fdatasync和fsync
   */
   rc = fsync(fd);
 #else 
@@ -3693,16 +3970,18 @@ static int full_fsync(int fd, int fullSync, int dataOnly){
 ** SQLITE_OK is returned. If an error occurs, either SQLITE_NOMEM
 ** or SQLITE_CANTOPEN is returned and *pFd is set to an undefined
 ** value.
-打开一个文件描述符到包含文件zFilename的目录。
-如果成功，*pFd设置为打开的文件描述符，SQLITE_OK返回。如果出现错误，SQLITE_NOMEM
-或者SQLITE_CANTOPEN返回，*pFd设置为一个未定义的值。
 **
 ** The directory file descriptor is used for only one thing - to
 ** fsync() a directory to make sure file creation and deletion events
 ** are flushed to disk.  Such fsyncs are not needed on newer
 ** journaling filesystems, but are required on older filesystems.
-目录文件描述符用于只有一件事，fsync()一个目录，确保文件创建和删除事件被刷新到
-磁盘。这样的fsyncs在更新的日志文件系统不需要，但在旧文件系统需要。
+** 
+** 如果成功，*pFd设置为打开的文件描述符并返回SQLITE_OK
+** 如果出现错误，SQLITE_NOMEM或SQLITE_CANTOPEN都不会返回，
+** *pFd设置为未定义值。
+** 文件描述符只用于fsync()确定目录，从而确保文件创建和
+** 删除事件都刷新到磁盘。这样的时间不需要更新到日志
+** 文件系统中，但是在旧的文件系统需要备份、
 **
 ** This routine can be overridden using the xSetSysCall interface.
 ** The ability to override this routine was added in support of the
@@ -3711,14 +3990,15 @@ static int full_fsync(int fd, int fullSync, int dataOnly){
 ** replace this routine with a harmless no-op.  To make this routine
 ** a no-op, replace it with a stub that returns SQLITE_OK but leaves
 ** *pFd set to a negative number.
-这个例程使用xSetSysCall接口可以被覆盖。
-覆盖这个例程的能力被增加来支持铬沙箱。打开一个目录是一个安全风险（我们被告知）
-所以使它可覆盖允许铬沙箱用一种无害的空操作来代替这个例程，代之以一个存根，返回
-SQLITE_OK但是留下*pFd设置为负数。
 **
 ** If SQLITE_OK is returned, the caller is responsible for closing
 ** the file descriptor *pFd using close().
-如果SQLITE_OK返回,调用者负责关闭文件描述符* pFd，使用close()。
+** 
+** 本例程主要是使用xSetSysCall接口重写。主要是为了支持chromium
+** 的沙盒。重写打开文件的安全风险所以可以在chromium的安全
+** 沙盒中进行重写操作，为了实现返回值为SQLITE_OK将*pFd值设置
+** 为负数。
+** 如果SQLITE_OK是返回值，函数调用者需要使用*pFd关闭文件
 */
 static int openDirectory(const char *zFilename, int *pFd){
   int ii;
@@ -3740,13 +4020,10 @@ static int openDirectory(const char *zFilename, int *pFd){
 
 /*
 ** Make sure all writes to a particular file are committed to disk.
-确保所有的写入到一个特定文件提交到磁盘。
 **
 ** If dataOnly==0 then both the file itself and its metadata (file
 ** size, access time, etc) are synced.  If dataOnly!=0 then only the
 ** file data is synced.
-如果dataOnly==0,那么文件本身及其元数据(文件
-大小、访问时间等)是同步的。如果dataOnly != 0，那么只有文件数据是同步的。
 **
 ** Under Unix, also make sure that the directory entry for the file
 ** has been created by fsync-ing the directory that contains the file.
@@ -3755,10 +4032,6 @@ static int openDirectory(const char *zFilename, int *pFd){
 ** SQLite to access the file will not know that the journal exists (because
 ** the directory entry for the journal was never created) and the transaction
 ** will not roll back - possibly leading to database corruption.
-在Unix中,也确保文件的目录条目已经通过同步包含文件的目录创建。
-如果我们不这样做,我们遇到停电，日志目录条目在我们重启后可能不存在。下一个SQLite
-访问文件将不知道日志存在（因为日志目录条目从未创建），事务不将回滚，可能导致
-数据库毁坏。
 */
 static int unixSync(sqlite3_file *id, int flags){
   int rc;
@@ -3767,16 +4040,13 @@ static int unixSync(sqlite3_file *id, int flags){
   int isDataOnly = (flags&SQLITE_SYNC_DATAONLY);
   int isFullsync = (flags&0x0F)==SQLITE_SYNC_FULL;
 
-  /* Check that one of SQLITE_SYNC_NORMAL or FULL was passed 
-检查SQLITE_SYNC_NORMAL或者FULL的一个通过*/
+  /* Check that one of SQLITE_SYNC_NORMAL or FULL was passed */
   assert((flags&0x0F)==SQLITE_SYNC_NORMAL
       || (flags&0x0F)==SQLITE_SYNC_FULL
   );
 
   /* Unix cannot, but some systems may return SQLITE_FULL from here. This
   ** line is to test that doing so does not cause any problems.
-Unix不能，但是一些系统可能从这里返回SQLITE_FULL。
-这行用于测试那样做，所以不会引起任何问题。
   */
   SimulateDiskfullError( return SQLITE_FULL );
 
@@ -3792,8 +4062,6 @@ Unix不能，但是一些系统可能从这里返回SQLITE_FULL。
   /* Also fsync the directory containing the file if the DIRSYNC flag
   ** is set.  This is a one-time occurrance.  Many systems (examples: AIX)
   ** are unable to fsync a directory, so ignore errors on the fsync.
-也同步包含这个文件的目录，如果DIRSYNC标志被设定。这是一次性的发生。很多系统
-（例如：AIX）不能同步一个目录，所以忽略同步错误。
   */
   if( pFile->ctrlFlags & UNIXFILE_DIRSYNC ){
     int dirfd;
@@ -3813,7 +4081,8 @@ Unix不能，但是一些系统可能从这里返回SQLITE_FULL。
 
 /*
 ** Truncate an open file to a specified size
-截断一个打开的文件到指定的大小。
+**
+** 将文件截断为指定大小
 */
 static int unixTruncate(sqlite3_file *id, i64 nByte){
   unixFile *pFile = (unixFile *)id;
@@ -3825,8 +4094,10 @@ static int unixTruncate(sqlite3_file *id, i64 nByte){
   ** file so that it consists of an integer number of chunks (i.e. the
   ** actual file size after the operation may be larger than the requested
   ** size).
-如果用户已经配置了这个文件的块大小，,截断文件以便于包含整数的块（即操作之后的
-实际文件大小可能大于请求的大小）。
+  ** 
+  ** 如果用户为本文件设置了块大小，那么就截断文件
+  ** 从而由整数块组成(实际文件在操作后可能大于请求的
+  ** 尺寸大小)
   */
   if( pFile->szChunk>0 ){
     nByte = ((nByte + pFile->szChunk - 1)/pFile->szChunk) * pFile->szChunk;
@@ -3844,9 +4115,11 @@ static int unixTruncate(sqlite3_file *id, i64 nByte){
     ** that effectively updates the change counter.  This might happen
     ** when restoring a database using the backup API from a zero-length
     ** source.
-   如果我们做一个正常写入到数据库文件（而不是做一个热日志回滚或者写入到一些不是
-正常数据库文件的文件），我们截断文件长度为零，这有效的更新改变计数器。
-这可能发生，当从一个0长度的源使用备份API来恢复数据库。
+    **
+    ** 如果我们对数据库文件进行正常写入(而不是执行
+    ** 热回滚或写入其他文件而不是一个正常的数据库文件)
+    ** 我们将文件长度截断为0，这个可能在使用从长度为0的
+    ** 数据库文件中恢复数据。
     */
     if( pFile->inNormalWrite && nByte==0 ){
       pFile->transCntrChng = 1;
@@ -3859,7 +4132,7 @@ static int unixTruncate(sqlite3_file *id, i64 nByte){
 
 /*
 ** Determine the current size of a file in bytes
-确定当前文件的大小,单位为字节
+** 按字节统计当前文件的大小
 */
 static int unixFileSize(sqlite3_file *id, i64 *pSize){
   int rc;
@@ -3878,9 +4151,10 @@ static int unixFileSize(sqlite3_file *id, i64 *pSize){
   ** in the OS-X msdos filesystem.  In order to avoid problems with upper
   ** layers, we need to report this file size as zero even though it is
   ** really 1.   Ticket #3260.
-当打开一个大小为0的数据库，findInodeInfo()程序将一个字节写入该文件为了解决一个
-在OS-X msdos文件系统上的错误。为了避免上面的问题，我们需要报告这个文件大小为0，
-即使它真是1.   标签#3260。
+  ** 
+  ** 当打开数据库的大小为0时，findInodeInfo()过程中写入一个字节到该文件
+  ** 从而在OS-Xmsdos文件系统中解决这个问题。为了避免上层系统出现问题
+  ** 我们需要报告这个文件为0，即使也为1，详见#3260
   */
   if( *pSize==1 ) *pSize = 0;
 
@@ -3892,7 +4166,6 @@ static int unixFileSize(sqlite3_file *id, i64 *pSize){
 /*
 ** Handler for proxy-locking file-control verbs.  Defined below in the
 ** proxying locking division.
-代理锁定文件控制动词处理程序。在代理锁定部分下面定义。
 */
 static int proxyFileControl(sqlite3_file*,int,void*);
 #endif
@@ -3902,14 +4175,16 @@ static int proxyFileControl(sqlite3_file*,int,void*);
 ** file-control operation.  Enlarge the database to nBytes in size
 ** (rounded up to the next chunk-size).  If the database is already
 ** nBytes or larger, this routine is a no-op.
-调用这个函数来处理SQLITE_FCNTL_SIZE_HIN文件控制操作。扩大数据库到nBytes大小
-（算到下一个块大小）。如果数据库已经nBytes或者更大，这个例程是一个空操作。
+** 
+** 这个函数主要是处理SQLITE_FCNTL_SIZE_HINT文件控制操作，将数据库
+** 大小放大到nBytes(向下舍入为下一个块大小)。如果数据库已经是
+** nBytes或更大，本操作无效。
 */
 static int fcntlSizeHint(unixFile *pFile, i64 nByte){
   if( pFile->szChunk>0 ){
-    i64 nSize;                    /* Required file size请求文件大小 */
+    i64 nSize;                    /* Required file size */
     struct stat buf;              /* Used to hold return values of fstat() */
-                                    /*用来保存fstat()返回值*/
+   
     if( osFstat(pFile->h, &buf) ) return SQLITE_IOERR_FSTAT;
 
     nSize = ((nByte+pFile->szChunk-1) / pFile->szChunk) * pFile->szChunk;
@@ -3919,9 +4194,8 @@ static int fcntlSizeHint(unixFile *pFile, i64 nByte){
       /* The code below is handling the return value of osFallocate() 
       ** correctly. posix_fallocate() is defined to "returns zero on success, 
       ** or an error number on  failure". See the manpage for details. 
-        下面的代码正确的处理osFallocate()返回值。posix_fallocate()定义为
-        “执行成功,将返回零或者失败，返回一个错误号码”。参阅手册获取更详细信息。
-    */
+      ** 下面的代码是正确处理osFallocate() 返回值，posix_fallocate()定义为"
+      ** 返回值为0成功，出错时为对于编号"详细信息见帮助页*/
       int err;
       do{
         err = osFallocate(pFile->h, buf.st_size, nSize-buf.st_size);
@@ -3933,13 +4207,15 @@ static int fcntlSizeHint(unixFile *pFile, i64 nByte){
       ** the last byte in each block within the extended region. This
       ** is the same technique used by glibc to implement posix_fallocate()
       ** on systems that do not have a real fallocate() system call.
-    如果操作系统没有posix_fallocate()，虚拟它。首先使用ftruncate()来设置
-    文件大小，然后写一个字节到扩展区域每块最后一个字节。函数库使用这种相同的
-    技术来在没有一个真正的fallocate()系统调用的系统上实现posix_fallocate()。
+      **
+      ** 如果首先假定操作系统没有posix_fallocate()，首先使用
+      ** dtruncate()设置文件块大小。然后在每个块的扩展区域写入
+      ** 一个字节，这个和glibc实现posix_fallocate()的原理一致。在
+      ** 没有实现fallocate()系统调用的系统上。
       */
-      int nBlk = buf.st_blksize;  /* File-system block size 文件系统块大小*/
+      int nBlk = buf.st_blksize;  /* File-system block size */
       i64 iWrite;                 /* Next offset to write to */
-                                    /*下一个要写的偏移量*/
+
       if( robust_ftruncate(pFile->h, nSize) ){
         pFile->lastErrno = errno;
         return unixLogError(SQLITE_IOERR_TRUNCATE, "ftruncate", pFile->zPath);
@@ -3960,11 +4236,12 @@ static int fcntlSizeHint(unixFile *pFile, i64 nByte){
 /*
 ** If *pArg is inititially negative then this is a query.  Set *pArg to
 ** 1 or 0 depending on whether or not bit mask of pFile->ctrlFlags is set.
-如果*pArg初始是负的，那么这是一个查询。设置*pArg为1或者0取决于是否
-pFile->ctrlFlags位屏蔽被设置。
 **
 ** If *pArg is 0 or 1, then clear or set the mask bit of pFile->ctrlFlags.
-如果*pArg为0或者1，那么清除或者设置pFile->ctrlFlags屏蔽位。
+** 如果*pArg初始值为负，那么就是一个查询语句，设置为1或0取决于
+** 是否已经设置了pFile->ctrlFlags的位掩码。
+** 
+** 如果*pArg为0或1，则清除或者设置pFile->ctrlFlsgd的位掩码。
 */
 static void unixModeBit(unixFile *pFile, unsigned char mask, int *pArg){
   if( *pArg<0 ){
@@ -3978,7 +4255,7 @@ static void unixModeBit(unixFile *pFile, unsigned char mask, int *pArg){
 
 /*
 ** Information and control of an open file handle.
-有关一个打开文件句柄的信息和控制。
+** 文件控制句柄和对应的信息。
 */
 static int unixFileControl(sqlite3_file *id, int op, void *pArg){
   unixFile *pFile = (unixFile*)id;
@@ -4019,8 +4296,9 @@ static int unixFileControl(sqlite3_file *id, int op, void *pArg){
     ** a rollback and that the database is therefore unchanged and
     ** it hence it is OK for the transaction change counter to be
     ** unchanged.
-    呼叫器调用这个方法来标示它已经做了一个回滚，因此数据库不改变，并且它表示
-    计数器改变计数不变是没问题的。
+    **
+    ** 页面调用这个方法表示已经完成了回滚操作，数据库也不会
+    ** 进行改变，而这也表明事务改变计数器可以不用改变
     */
     case SQLITE_FCNTL_DB_UNCHANGED: {
       ((unixFile*)id)->dbUpdate = 0;
@@ -4041,15 +4319,17 @@ static int unixFileControl(sqlite3_file *id, int op, void *pArg){
 ** Return the sector size in bytes of the underlying block device for
 ** the specified file. This is almost always 512 bytes, but may be
 ** larger for some devices.
-以指定文件的底层块设备字节来返回扇区大小。这几乎总是512字节，但可能对于一些设备
-来说更大。 
 **
 ** SQLite code assumes this function cannot fail. It also assumes that
 ** if two files are created in the same file-system directory (i.e.
 ** a database and its journal file) that the sector size will be the
 ** same for both.
-SQLite代码假设这个函数不会失败。它还假设如果两个文件在相同的文件系统目录中创建
-（即一个数据库和它的日志文件）两个扇区大小将一样。
+**
+** 返回指定文件基本数据块的字节大小。一般情况下为512字节
+** 但在一些设备上可能更大。
+** 
+** SQLite代码假定这个函数不会出错，同时假定在同一个系统文件
+** 目录下创建两个文件(数据库和日志文件)，两者的扇区大小相同。
 */
 static int unixSectorSize(sqlite3_file *pFile){
   (void)pFile;
@@ -4058,7 +4338,6 @@ static int unixSectorSize(sqlite3_file *pFile){
 
 /*
 ** Return the device characteristics for the file.
-返回文件的设备特征。
 **
 ** This VFS is set up to return SQLITE_IOCAP_POWERSAFE_OVERWRITE by default.
 ** However, that choice is contraversial since technically the underlying
@@ -4069,12 +4348,16 @@ static int unixSectorSize(sqlite3_file *pFile){
 ** of required I/O for journaling, since a lot of padding is eliminated.
 **  Hence, while POWERSAFE_OVERWRITE is on by default, there is a file-control
 ** available to turn it off and URI query parameter available to turn it off.
-这个VFS设置来默认返回SQLITE_IOCAP_POWERSAFE_OVERWRITE。
-但是，这个选择是矛盾的，因为技术上底层文件系统不会总是提供电源安全覆盖。
-（换句话说，发生停电事件后，部分从来没被写入的文件可能最终被修改。）但是，
-non-PSOW行为，是非常非常罕见的。并且声明PSOW使日志的I/O请求数量大量减少，因为
-很多填充被消除。因此，虽然POWERSAFE_OVERWRITE在默认情况下，但有个文件控制可用来
-关掉它且URI查询参数可用来关掉它。
+** 
+** 返回设备文件的特点
+** VFS默认情况下设置为返回SQLITE_IOCAP_POWERSAFE_OVERWRITE，
+** 然而，这种选择是可以逆转的，因为系统不一定提供了
+** 电源安全文件机制。(在断电后，部分被改变的文件不一定
+** 已经实现了改变).然而，无PSOW行为极其稀少。同时，声明
+** PSOW行为大大减少了日志需要的IO操作。这其中消除了很多
+** 填充操作。所以，默认情况下POWERSAFE_OVERWRITE是打开的，
+** 也有一个可选的文件控制选项去关闭，URI查询参数也可以
+** 关闭它。
 */
 static int unixDeviceCharacteristics(sqlite3_file *id){
   unixFile *p = (unixFile*)id;
@@ -4090,14 +4373,11 @@ static int unixDeviceCharacteristics(sqlite3_file *id){
 
 /*
 ** Object used to represent an shared memory buffer.  
-对象用来代表一个共享内存缓冲区。
 **
 ** When multiple threads all reference the same wal-index, each thread
 ** has its own unixShm object, but they all point to a single instance
 ** of this unixShmNode object.  In other words, each wal-index is opened
 ** only once per process.
-当多个线程都引用相同的wal-index索引，每个线程有它自己的unixShm对象，但是它们
-都指向这个unixShmNode对象的一个实例。换句话说，每个wal-index每个过程只打开一次。
 **
 ** Each unixShmNode object is connected to a single unixInodeInfo object.
 ** We could coalesce this object into unixInodeInfo, but that would mean
@@ -4105,19 +4385,25 @@ static int unixDeviceCharacteristics(sqlite3_file *id){
 ** open files) would have to carry around this extra information.  So
 ** the unixInodeInfo object contains a pointer to this unixShmNode object
 ** and the unixShmNode object is created only when needed.
-每个unixShmNode对象关联到一个unixInodeInfo对象。我们可以合并
-这个对象到unixInodeInfo，但这意味着每一个打开的文件不使用共享内存
-（换句话说，大多数打开的文件）必须携带这额外的信息。所以这个unixInodeInfo对象
-包含这个unixShmNode对象的一个指针，且unixShmNode对象仅当需要的时候创建。
+**
+** 用于表示共享内存缓冲区对象
+** 当多线程都引用同一个wal-index，每个线程都有自己的unixShm对象
+** 但是都指向单个实例，这个unixShmNode对象都指向同一个实例。
+** 换句话说，每个wal-index 只能被一个进程打开。
+**
+** 每个unixShmNode对象连接到单个unixInodeInfo对象。
+** 我们可以将这个对象合并到unixInodeInfo，但这是意味着
+** 每个打开的文件，不使用共享内存（换句话说，大多数
+** 打开文件）将不得不携带这些额外的信息。所以
+** unixInodeInfo对象包含指向此unixShmNode对象的指针
+** 和unixShmNode对象仅在需要时创建。
 **
 ** unixMutexHeld() must be true when creating or destroying
 ** this object or while reading or writing the following fields:
-unixMutexHeld()必须为真，当创建或者销毁这个对象时，或当读或者写以下字段：
 **
 **      nRef
 **
 ** The following fields are read-only after the object is created:
-以下字段在对象创建之后是只读的。
 ** 
 **      fid
 **      zFilename
@@ -4125,27 +4411,36 @@ unixMutexHeld()必须为真，当创建或者销毁这个对象时，或当读�
 ** Either unixShmNode.mutex must be held or unixShmNode.nRef==0 and
 ** unixMutexHeld() is true when reading or writing any other field
 ** in this structure.
-要么unixShmNode.mutex互斥必须被持有或unixShmNode.nRef为0，并且
-当读或写在这个结构体的任何其他字段时unixMutexHeld()为真。
+**
+** unixMutexHeld（）在创建或销毁时必须为true
+** 此对象或在读取或写入以下字段时：
+**
+**  nRef
+**
+** 在创建对象后，以下字段为只读：
+**
+**  fid
+**  zFilename
+**
+** unixShmNode.mutex必须保持或unixShmNode.nRef == 0和
+** unixMutexHeld（）在读取或写入任何其他字段时为true
+** 在此结构中。
+**
 */
 struct unixShmNode {
   unixInodeInfo *pInode;     /* unixInodeInfo that owns this SHM node */
-                                /*unixInodeInfo拥有这个SHM节点*/
-  sqlite3_mutex *mutex;      /* Mutex to access this object 互斥访问这个对象*/
+  sqlite3_mutex *mutex;      /* Mutex to access this object */
   char *zFilename;           /* Name of the mmapped file */
-  int h;                     /* Open file descriptor 打开文件描述符*/
+  int h;                     /* Open file descriptor */
   int szRegion;              /* Size of shared-memory regions */
-                                /*共享内存区域的大小*/
-  u16 nRegion;               /* Size of array apRegion 数组apRegion大小*/
+  u16 nRegion;               /* Size of array apRegion */
   u8 isReadonly;             /* True if read-only */
   char **apRegion;           /* Array of mapped shared-memory regions */
-                                /*映射共享内存区域的数组*/
   int nRef;                  /* Number of unixShm objects pointing to this */
-                                /*许多unixShm对象指向这一点*/
   unixShm *pFirst;           /* All unixShm objects pointing to this */
 #ifdef SQLITE_DEBUG
-  u8 exclMask;               /* Mask of exclusive locks held 持有排它锁掩码*/
-  u8 sharedMask;             /* Mask of shared locks held 持有共享锁的掩码*/
+  u8 exclMask;               /* Mask of exclusive locks held */
+  u8 sharedMask;             /* Mask of shared locks held */
   u8 nextShmId;              /* Next available unixShm.id value */
 #endif
 };
@@ -4153,66 +4448,66 @@ struct unixShmNode {
 /*
 ** Structure used internally by this VFS to record the state of an
 ** open shared memory connection.
-这个VFS使用内部的结构体来记录一个打开的共享内存连接的状态。
 **
 ** The following fields are initialized when this object is created and
 ** are read-only thereafter:
-　以下字段被初始化是当这个对象创建时，且之后是只读的。
 **
 **    unixShm.pFile
 **    unixShm.id
 **
 ** All other fields are read/write.  The unixShm.pFile->mutex must be held
 ** while accessing any read/write fields.
-所以其他字段是读/写。unixShm.pFile->mutex必须被持有，当访问任何读/写字段。
+**
+** 此VFS内部使用的结构，用于记录打开共享内存连接的状态
+** 
+**
+** 创建此对象初始化之后这些字段只读：
+**
+**  unixShm.pFile
+**  unixShm.id
+**
+** 所有其他字段为读/写。在访问任何读/写字段必须保持unixShm.pFile-> mutex
+** 
 */
 struct unixShm {
   unixShmNode *pShmNode;     /* The underlying unixShmNode object */
-                                /*底层unixShmNode对象*/
   unixShm *pNext;            /* Next unixShm with the same unixShmNode */
-                                /*下一个一样unixShmNode的unixShm*/
   u8 hasMutex;               /* True if holding the unixShmNode mutex */
-                                /*如果持有unixShmNode互斥则为真*/
   u8 id;                     /* Id of this connection within its unixShmNode */
-                                /*unixShmNode内连接的Id*/
   u16 sharedMask;            /* Mask of shared locks held */
-                                /*持有共享锁掩码*/
   u16 exclMask;              /* Mask of exclusive locks held */
-                                /*持有排它锁掩码*/
 };
 
 /*
-** Constants used for locking
-用于锁定的常量
+** Constants used for locking 用于锁定的常数
 */
 #define UNIX_SHM_BASE   ((22+SQLITE_SHM_NLOCK)*4)         /* first lock byte */
 #define UNIX_SHM_DMS    (UNIX_SHM_BASE+SQLITE_SHM_NLOCK)  /* deadman switch */
 
 /*
 ** Apply posix advisory locks for all bytes from ofst through ofst+n-1.
-对从ofst通过ofst+n-1的所有字节，应用posix咨询锁。
 **
 ** Locks block if the mask is exactly UNIX_SHM_C and are non-blocking
 ** otherwise.
-如果掩码正是UNIX_SHM_C，那么锁阻塞，另外锁是无阻塞的。
+**
+** 对于从第1到第n + 1的所有字节应用posix咨询锁。
+**
+** 如果掩码正好是UNIX_SHM_C，则锁定块，否则为非阻塞。
+**
 */
 static int unixShmSystemLock(
   unixShmNode *pShmNode, /* Apply locks to this open shared-memory segment */
-                            /*应用锁打开共享内存段*/
   int lockType,          /* F_UNLCK, F_RDLCK, or F_WRLCK */
   int ofst,              /* First byte of the locking range */
-                            /*锁定范围的第一个字节*/
-  int n                  /* Number of bytes to lock 锁定的字节数*/
+  int n                  /* Number of bytes to lock */
 ){
-  struct flock f;       /* The posix advisory locking structure 咨询锁结构*/
+  struct flock f;       /* The posix advisory locking structure */
   int rc = SQLITE_OK;   /* Result code form fcntl() */
 
   /* Access to the unixShmNode object is serialized by the caller */
-    /*访问unixShmNode对象由调用者序列化*/
   assert( sqlite3_mutex_held(pShmNode->mutex) || pShmNode->nRef==0 );
 
   /* Shared locks never span more than one byte */
-    /*共享锁从未跨越超过一个字节*/
   assert( n==1 || lockType!=F_RDLCK );
 
   /* Locks are within range */
@@ -4220,7 +4515,6 @@ static int unixShmSystemLock(
 
   if( pShmNode->h>=0 ){
     /* Initialize the locking parameters */
-    /*初始化锁参数*/
     memset(&f, 0, sizeof(f));
     f.l_type = lockType;
     f.l_whence = SEEK_SET;
@@ -4231,8 +4525,9 @@ static int unixShmSystemLock(
     rc = (rc!=(-1)) ? SQLITE_OK : SQLITE_BUSY;
   }
 
-  /* Update the global lock state and do debug tracing */
-    /*更新全局锁状态,做调试跟踪*/
+  /* Update the global lock state and do debug tracing 
+  ** 更新全局锁定状态并执行调试跟踪
+  */
 #ifdef SQLITE_DEBUG
   { u16 mask;
   OSTRACE(("SHM-LOCK "));
@@ -4276,8 +4571,10 @@ static int unixShmSystemLock(
 **
 ** This is not a VFS shared-memory method; it is a utility function called
 ** by VFS shared-memory methods.
-清除所有unixShmNode.nRef为0的条目的unixShmNodeList列表
-这不是一个VFS共享内存方法，这是一个VFS共享内存方法的通用函数调用。
+**
+** 使用unixShmNode.nRef == 0清除所有条目的unixShmNodeList列表。
+** 这不是一个VFS共享内存方法; 它是一个由VFS共享内存方法调用的效用函数。
+**
 */
 static void unixShmPurge(unixFile *pFd){
   unixShmNode *p = pFd->pInode->pShmNode;
@@ -4306,16 +4603,12 @@ static void unixShmPurge(unixFile *pFd){
 /*
 ** Open a shared-memory area associated with open database file pDbFd.  
 ** This particular implementation uses mmapped files.
-打开一个与打开的数据库文件pDbFd有关的共享内存区域。
 **
 ** The file used to implement shared-memory is in the same directory
 ** as the open database file and has the same name as the open database
 ** file with the "-shm" suffix added.  For example, if the database file
 ** is "/home/user1/config.db" then the file that is created and mmapped
-** for shared memory will be called "/home/user1/config.db-shm". 
-用于实现共享内存的该文件是和打开的数据库文件在同一个目录，并且和带"-shm"后缀的
-打开的数据库文件有相同的名字。例如，如果数据库文件是"/home/user1/config.db"，
-那么这个为共享内存创建和映射的文件将被称为"/home/user1/config.db-shm"。
+** for shared memory will be called "/home/user1/config.db-shm".  
 **
 ** Another approach to is to use files in /dev/shm or /dev/tmp or an
 ** some other tmpfs mount. But if a file in a different directory
@@ -4331,30 +4624,43 @@ static void unixShmPurge(unixFile *pFd){
 ** same database file at the same time, database corruption will likely
 ** result. The SQLITE_SHM_DIRECTORY compile-time option is considered
 ** "unsupported" and may go away in a future SQLite release.
-另一种方法是使用在/dev/shm或/dev/tmp下的文件，或者其他一些tmpfs接口。
-但是如果在数据库文件的不同目录的一个文件被使用，那么不同的访问权限或者一个
-chroot()可能会导致两个在同一个数据库的不同进程，使用不同共享内存文件结束。
-- 意味着他们的内存不会被真的共享 - 导致数据库毁坏。然而，这个tmpfs文件用法
-能在编译阶段被启用，使用-DSQLITE_SHM_DIRECTORY="/dev/shm"或等价物。
-SQLITE_SHM_DIRECTORY编译阶段选项的使用，导致SQLite不兼容的构建；
-不同SQLITE_SHM_DIRECTORY设置的SQLite的构建试图同时使用相同的数据库文件，
-数据库毁坏很可能产生。SQLITE_SHM_DIRECTORY编译阶段选项被认为是“不支持”，并且
-可能会在未来的SQLite发布中消失。
+**
+** 打开与打开的数据库文件pDbFd相关联的共享内存区域。
+** 此特定实现使用mmapped文件。
+**
+** 用于实现共享内存的文件与打开的数据库文件在同一目录中，
+** 并且与添加了“-shm”后缀的打开数据库文件具有相同的名称。
+** 例如，如果数据库文件是“/home/user1/config.db”，则为共享内存创建
+** 和mmapped的文件将被称为“/home/user1/config.db-shm”。
+**
+** 另一种方法是使用/ dev / shm或/ dev /tmp中的文件或安装其他一些tmpfs。
+** 但是，如果使用与数据库文件不同目录中的文件，则不同的访问
+** 权限或chroot（）可能导致同一数据库上的两个不同的进程同时使用
+** 不同的文件共享内存，但是实际上他们的内存不会真的共享,这将
+** 导致数据库损坏。但是，我们可以在编译时使用
+** -DSQLITE_SHM_DIRECTORY=“/ dev /shm”或等效命令来启用此tmpfs文件使用。
+** 使用SQLITE_SHM_DIRECTORY编译时选项会导致SQLite的不兼容构建;
+** SQLite的构建使用不同的SQLITE_SHM_DIRECTORY设置尝试在同一时间使用
+** 相同的数据库文件，数据库损坏可能会导致。编译时选项
+** SQLITE_SHM_DIRECTORY被认为是“不支持”，这个特性可能在未来SQLite中消失。
 **
 ** When opening a new shared-memory file, if no other instances of that
 ** file are currently open, in this process or in other processes, then
 ** the file must be truncated to zero length or have its header cleared.
-当打开一个新的共享内存文件，如果没有该文件的其他用例是当前打开的，在这一
-过程或其他过程，那么这个文件必须被截断为0长度或清除其头部。
 **
 ** If the original database file (pDbFd) is using the "unix-excl" VFS
 ** that means that an exclusive lock is held on the database file and
 ** that no other processes are able to read or write the database.  In
 ** that case, we do not really need shared memory.  No shared memory
 ** file is created.  The shared memory will be simulated with heap memory.
-如果原始数据库文件(pDbFd)是使用“unix-excl”VFS，这意味着在数据库文件持有排它锁，
-并且没有其他进程读或写数据库。在这种情况下，我们不用真正的需要共享内存。
-没有共享内存文件被创建。共享内存将被堆内存模拟。
+**
+** 打开新的共享内存文件时，如果当前文件没有的其他打开实例，
+** 则在此过程或其他进程中，该文件必须截断为零长度或清除其头部。
+** 如果原始数据库文件（pDbFd）使用“unix-excl”VFS，这意味着对数据库
+** 文件保留独占锁，并且没有其他进程能够读取或写入数据库。 
+** 在这种情况下，我们不需要共享内存。 不会创建共享内存文件。 
+** 使用堆内存进行模拟共享内存。
+**
 */
 static int unixOpenSharedMemory(unixFile *pDbFd){
   struct unixShm *p = 0;          /* The connection to be opened */
@@ -4364,7 +4670,7 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
   char *zShmFilename;             /* Name of the file used for SHM */
   int nShmFilename;               /* Size of the SHM filename in bytes */
 
-  /* Allocate space for the new unixShm object. 为新unixShm对象分配空间*/
+  /* Allocate space for the new unixShm object. */
   p = sqlite3_malloc( sizeof(*p) );
   if( p==0 ) return SQLITE_NOMEM;
   memset(p, 0, sizeof(*p));
@@ -4372,8 +4678,10 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
 
   /* Check to see if a unixShmNode object already exists. Reuse an existing
   ** one if present. Create a new one if necessary.
-检查看unixShmNode对象是否已经存在。如果存在，重用一个存在的该对象。
-在必要时创建一个新的。
+  **
+  ** 检查unixShmNode对象是否已存在。 存在就重复使用现有的对象。
+  ** 必要时，创建一个新的对象。
+  **
   */
   unixEnterMutex();
   pInode = pDbFd->pInode;
@@ -4384,8 +4692,9 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
     /* Call fstat() to figure out the permissions on the database file. If
     ** a new *-shm file is created, an attempt will be made to create it
     ** with the same permissions.
-    调用函数fstat()来找出数据库文件的权限。如果创建了一个新的*-shm文件，
-    将试图用相同的权限来创建它。
+    **
+    ** 调用fstat（）来查找数据库文件的权限。 如果创建了新的* -shm文件，
+    ** 将尝试使用相同的权限创建它。
     */
     if( osFstat(pDbFd->h, &sStat) && pInode->bProcessLock==0 ){
       rc = SQLITE_IOERR_FSTAT;
@@ -4436,14 +4745,17 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
       /* If this process is running as root, make sure that the SHM file
       ** is owned by the same user that owns the original database.  Otherwise,
       ** the original owner will not be able to connect.
-    如果这个进程是作为根运行，确保SHM文件属于相同的拥有原数据库的用户。否则，
-    原来的所有者将无法连接。
+      **
+      ** 如果此进程以root身份运行，请确保SHM文件由原始数据库的同一用户拥有。
+      ** 否则，原始所有者也将无法连接。
+      **
       */
       osFchown(pShmNode->h, sStat.st_uid, sStat.st_gid);
   
       /* Check to see if another process is holding the dead-man switch.
       ** If not, truncate the file to zero length. 
-    检查看其他进程是否正在持有dead-man开关。如果没有，截断该文件为0长度。
+      **
+      ** 检查另一个进程是否持有dead-man开关。如果没有，请将文件截断为零长度。
       */
       rc = SQLITE_OK;
       if( unixShmSystemLock(pShmNode, F_WRLCK, UNIX_SHM_DMS, 1)==SQLITE_OK ){
@@ -4459,7 +4771,6 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
   }
 
   /* Make the new connection a child of the unixShmNode */
-/*是新连接为unixShmNode的孩子*/
   p->pShmNode = pShmNode;
 #ifdef SQLITE_DEBUG
   p->id = pShmNode->nextShmId++;
@@ -4474,9 +4785,11 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
   ** left to do is to link the new object into the linked list starting
   ** at pShmNode->pFirst. This must be done while holding the pShmNode->mutex 
   ** mutex.
-pShmNode引用计数已经在unixEnterMutex()互斥量的覆盖下被增加，并且从新的
-（结构体unixShm）对象到pShmNode的指针已被设置。剩下的要做的就是去将新的对象
-链接到链表，以pShmNode->pFirst开始。这必须要做，当持有pShmNode->mutex互斥量时。
+  ** 
+  ** pShmNode上的引用计数已在unixEnterMutex（）互斥条件下增加，
+  ** 并且已设置从新创建的（struct unixShm）对象到pShmNode的指针。 
+  ** 所有剩下要做的是将该对象链接到以pShmNode->pFirst开始的列表中。 
+  ** 这些操作都必须同时保持pShmNode-> mutex.
   */
   sqlite3_mutex_enter(pShmNode->mutex);
   p->pNext = pShmNode->pFirst;
@@ -4484,10 +4797,9 @@ pShmNode引用计数已经在unixEnterMutex()互斥量的覆盖下被增加，�
   sqlite3_mutex_leave(pShmNode->mutex);
   return SQLITE_OK;
 
-  /* Jump here on any error 在任何错误下跳转至此*/
+  /* Jump here on any error  发生错误时调到此处*/
 shm_open_err:
   unixShmPurge(pDbFd);       /* This call frees pShmNode if required */
-                                /*如果需要，这个调用释放pShmNode*/
   sqlite3_free(p);
   unixLeaveMutex();
   return rc;
@@ -4498,44 +4810,48 @@ shm_open_err:
 ** shared-memory associated with the database file fd. Shared-memory regions 
 ** are numbered starting from zero. Each shared-memory region is szRegion 
 ** bytes in size.
-调用这个函数来获得与数据库文件fd有关的共享内存区域iRegion指针。共享内存区域
-从0开始编号。每一个共享内存区域大小是szRegion字节。
 **
 ** If an error occurs, an error code is returned and *pp is set to NULL.
-如果发生一个错误，返回一个错误代码并且*pp设置为NULL。
 **
 ** Otherwise, if the bExtend parameter is 0 and the requested shared-memory
 ** region has not been allocated (by any client, including one running in a
 ** separate process), then *pp is set to NULL and SQLITE_OK returned. If 
 ** bExtend is non-zero and the requested shared-memory region has not yet 
 ** been allocated, it is allocated by this function.
-否则，如果bExtend参数是0且请求的共享内存区域没有被分配（通过任何客户端，包括
-一个运行在单独的进程），然后*pp设为NULL，SQLITE_OK返回。如果bExtend非零且请求
-的共享内存区域还没有被分配，它被这个函数分配。
 **
 ** If the shared-memory region has already been allocated or is allocated by
 ** this call as described above, then it is mapped into this processes 
 ** address space (if it is not already), *pp is set to point to the mapped 
 ** memory and SQLITE_OK returned.
-如果共享内存区域已经被分配或者被这个如上所述的调用分配，那么它映射到这个进程
-地址空间（如果它还没有），*pp被设置来指向映射的内存且SQLITE_OK返回。
+**
+** 调用该函数以获得指向与数据库文件fd相关联的共享存储器的区域iRegion的指针。
+** 共享内存区域从零开始编号。 每个共享内存区域的字节大小为szRegion。
+**
+** 如果发生错误，则返回错误代码，并将* pp设置为NULL。
+**
+** 否则，如果bExtend参数为0，并且尚未分配请求的共享内存区域（对于任何客户端，
+** 包括在独立进程中运行的客户端），则* pp将设置为NULL，并返回SQLITE_OK。 如果
+** bExtend不为零，并且所请求的共享内存区域尚未分配，则由此函数分配。
+**
+** 如果共享内存区域已经被分配或通过上述的调用分配，则它被映射到这个进程
+** 地址空间（如果它还没有确定），则设置*pp为指向映射的存储器，返回值为SQLITE_OK。
+**
 */
 static int unixShmMap(
   sqlite3_file *fd,               /* Handle open on database file */
-                                    /*处理打开数据库文件*/
-  int iRegion,                    /* Region to retrieve 检索区域*/
-  int szRegion,                   /* Size of regions 区域的大小*/
+  int iRegion,                    /* Region to retrieve */
+  int szRegion,                   /* Size of regions */
   int bExtend,                    /* True to extend file if necessary */
-                                    /*为真则去扩展文件如果有必要*/
-  void volatile **pp              /* OUT: Mapped memory 内存映射*/
+  void volatile **pp              /* OUT: Mapped memory */
 ){
   unixFile *pDbFd = (unixFile*)fd;
   unixShm *p;
   unixShmNode *pShmNode;
   int rc = SQLITE_OK;
 
-  /* If the shared-memory file has not yet been opened, open it now. */
-/*如果共享内存文件还没被打开，现在打开它*/
+  /* If the shared-memory file has not yet been opened, open it now. 
+  ** 如果共享内存文件尚未打开，请立即打开它。
+  */
   if( pDbFd->pShm==0 ){
     rc = unixOpenSharedMemory(pDbFd);
     if( rc!=SQLITE_OK ) return rc;
@@ -4550,9 +4866,8 @@ static int unixShmMap(
   assert( pShmNode->h<0 || pDbFd->pInode->bProcessLock==0 );
 
   if( pShmNode->nRegion<=iRegion ){
-    char **apNew;                      /* New apRegion[] array 新数组*/
+    char **apNew;                      /* New apRegion[] array */
     int nByte = (iRegion+1)*szRegion;  /* Minimum required file size */
-                                        /*最低要求文件大小*/
     struct stat sStat;                 /* Used by fstat() */
 
     pShmNode->szRegion = szRegion;
@@ -4561,8 +4876,10 @@ static int unixShmMap(
       /* The requested region is not mapped into this processes address space.
       ** Check to see if it has been allocated (i.e. if the wal-index file is
       ** large enough to contain the requested region).
-    请求的区域不是映射到这个进程地址空间。
-    检查看它是否被分配（即如果wal-index文件大到足以包含所请求的区域）
+      **
+      ** 请求的区域不会映射到此进程地址空间。检查
+      ** 它是否已经被分配（即：如果在wal索引文件大到包含所请求的区域）。
+      **
       */
       if( osFstat(pShmNode->h, &sStat) ){
         rc = SQLITE_IOERR_SHMSIZE;
@@ -4572,12 +4889,15 @@ static int unixShmMap(
       if( sStat.st_size<nByte ){
         /* The requested memory region does not exist. If bExtend is set to
         ** false, exit early. *pp will be set to NULL and SQLITE_OK returned.
-        请求的内存区域不存在。如果bExtend设为假，提前退出。
-        *pp将设置为NULL，SQLITE_OK返回。
         **
         ** Alternatively, if bExtend is true, use ftruncate() to allocate
         ** the requested memory region.
-        此外，如果bExtend为真，使用ftruncate()来分配所请求的内存区域。
+        **
+        ** 请求的内存区域不存在。 如果bExtend设置为false，则提前退出。 
+        ** 并将*pp设置为NULL且返回SQLITE_OK。
+        **
+        ** 或者，如果bExtend为true，则使用ftruncate（）分配所请求的内存区域。
+        **
         */
         if( !bExtend ) goto shmpage_out;
         if( robust_ftruncate(pShmNode->h, nByte) ){
@@ -4588,8 +4908,9 @@ static int unixShmMap(
       }
     }
 
-    /* Map the requested memory region into this processes address space. */
-    /*请求的内存区域映射到进程的地址空间*/
+    /* Map the requested memory region into this processes address space. 
+	** 将请求的内存区域映射到此进程地址空间。
+	*/
     apNew = (char **)sqlite3_realloc(
         pShmNode->apRegion, (iRegion+1)*sizeof(char *)
     );
@@ -4635,36 +4956,31 @@ shmpage_out:
 
 /*
 ** Change the lock state for a shared-memory segment.
-改变一个共享内存段的锁状态。
 **
 ** Note that the relationship between SHAREd and EXCLUSIVE locks is a little
 ** different here than in posix.  In xShmLock(), one can go from unlocked
 ** to shared and back or from unlocked to exclusive and back.  But one may
 ** not go from shared to exclusive or from exclusive to shared.
-注意，共享锁和排它锁的关系在这里有点和在posix不同。在xShmLock()，一个对象能够
-从解锁到共享和返回或者从解锁到独占和返回。但是一个对象可能不会从共享到独占或者
-从独占到共享。
+**
+** 更改共享内存段的锁定状态。
+**
+** 请注意，在此处SHAREd和EXCLUSIVE锁之间的关系和posix不同。
+** 在xShmLock（）中，可以实现从解锁到共享和从解锁到独占
+** 和返回之间的转换。但是不能实现从共享到独占或从独占到共享的转换。
+**
 */
 static int unixShmLock(
   sqlite3_file *fd,          /* Database file holding the shared memory */
-                                /*持有共享内存的数据库文件*/
   int ofst,                  /* First lock to acquire or release */
-                                /*第一个获得或释放锁*/
   int n,                     /* Number of locks to acquire or release */
-                                /*获取或释放的锁的数量*/
-  int flags                  /* What to do with the lock 如何处理锁*/
+  int flags                  /* What to do with the lock */
 ){
   unixFile *pDbFd = (unixFile*)fd;      /* Connection holding shared memory */
-                                        /*持有共享内存的连接*/
   unixShm *p = pDbFd->pShm;             /* The shared memory being locked */
-                                        /*被加锁的共享内存*/
   unixShm *pX;                          /* For looping over all siblings */
-                                        /*为所有同层的循环*/
   unixShmNode *pShmNode = p->pShmNode;  /* The underlying file iNode */
-                                            /*底层文件索引节点*/
-  int rc = SQLITE_OK;                   /* Result code 结果代码*/
+  int rc = SQLITE_OK;                   /* Result code */
   u16 mask;                             /* Mask of locks to take or release */
-                                        /*获得或释放锁的掩码*/
 
   assert( pShmNode==pDbFd->pInode->pShmNode );
   assert( pShmNode->pInode==pDbFd->pInode );
@@ -4682,23 +4998,23 @@ static int unixShmLock(
   assert( n>1 || mask==(1<<ofst) );
   sqlite3_mutex_enter(pShmNode->mutex);
   if( flags & SQLITE_SHM_UNLOCK ){
-    u16 allMask = 0; /* Mask of locks held by siblings 被同层的持有锁的掩码*/
+    u16 allMask = 0; /* Mask of locks held by siblings */
 
-    /* See if any siblings hold this same lock 看是否任何同层持有这一样的锁*/
+    /* See if any siblings hold this same lock */
     for(pX=pShmNode->pFirst; pX; pX=pX->pNext){
       if( pX==p ) continue;
       assert( (pX->exclMask & (p->exclMask|p->sharedMask))==0 );
       allMask |= pX->sharedMask;
     }
 
-    /* Unlock the system-level locks 打开系统级锁*/
+    /* Unlock the system-level locks */
     if( (mask & allMask)==0 ){
       rc = unixShmSystemLock(pShmNode, F_UNLCK, ofst+UNIX_SHM_BASE, n);
     }else{
       rc = SQLITE_OK;
     }
 
-    /* Undo the local locks 撤销本地锁*/
+    /* Undo the local locks */
     if( rc==SQLITE_OK ){
       p->exclMask &= ~mask;
       p->sharedMask &= ~mask;
@@ -4709,9 +5025,8 @@ static int unixShmLock(
     /* Find out which shared locks are already held by sibling connections.
     ** If any sibling already holds an exclusive lock, go ahead and return
     ** SQLITE_BUSY.
-    联合的锁被连接持有而不是"p"。
-    找出哪些共享锁已经被同层连接持有。
-    如果任何同层已经持有一个排它锁，继续并返回SQLITE_BUSY。
+    ** 查找哪些共享锁已经由兄弟连接持有。如果有同级进程占有独占锁，
+    ** 请继续并返回SQLITE_BUSY。
     */
     for(pX=pShmNode->pFirst; pX; pX=pX->pNext){
       if( (pX->exclMask & mask)!=0 ){
@@ -4722,7 +5037,6 @@ static int unixShmLock(
     }
 
     /* Get shared locks at the system level, if necessary */
-    /*如果有必要，获取系统级共享锁*/
     if( rc==SQLITE_OK ){
       if( (allShared & mask)==0 ){
         rc = unixShmSystemLock(pShmNode, F_RDLCK, ofst+UNIX_SHM_BASE, n);
@@ -4731,14 +5045,15 @@ static int unixShmLock(
       }
     }
 
-    /* Get the local shared locks 获得本地共享锁*/
+    /* Get the local shared locks */
     if( rc==SQLITE_OK ){
       p->sharedMask |= mask;
     }
   }else{
     /* Make sure no sibling connections hold locks that will block this
     ** lock.  If any do, return SQLITE_BUSY right away.
-    确保没有同层连接持有将阻塞这个锁的锁。如果有任何该行为，立刻返回SQLITE_BUSY
+    **
+    ** 确保没有同级连接拥有将阻止此锁的锁。 如果有，返回值为SQLITE_BUSY。
     */
     for(pX=pShmNode->pFirst; pX; pX=pX->pNext){
       if( (pX->exclMask & mask)!=0 || (pX->sharedMask & mask)!=0 ){
@@ -4749,7 +5064,7 @@ static int unixShmLock(
   
     /* Get the exclusive locks at the system level.  Then if successful
     ** also mark the local connection as being locked.
-    获得系统级排它锁。然后如果成功，也标志着本地连接是锁着的。
+    ** 获取系统级排它锁。 成功就将本地连接标记为已锁定。
     */
     if( rc==SQLITE_OK ){
       rc = unixShmSystemLock(pShmNode, F_WRLCK, ofst+UNIX_SHM_BASE, n);
@@ -4767,15 +5082,13 @@ static int unixShmLock(
 
 /*
 ** Implement a memory barrier or memory fence on shared memory.  
-在共享内存实现一个内存屏障或内存防护。
 **
 ** All loads and stores begun before the barrier must complete before
 ** any load or store begun after the barrier.
-所有在屏障开始前的加载和存储，必须在任何屏障开始后的加载和存储前完成。
 */
 static void unixShmBarrier(
   sqlite3_file *fd                /* Database file holding the shared memory */
-){                                     /*持有共享内存的数据库文件*/
+){
   UNUSED_PARAMETER(fd);
   unixEnterMutex();
   unixLeaveMutex();
@@ -4784,22 +5097,18 @@ static void unixShmBarrier(
 /*
 ** Close a connection to shared-memory.  Delete the underlying 
 ** storage if deleteFlag is true.
-关闭一个共享内存连接。如果deleteFlag为真，删除底层存储。
 **
 ** If there is no shared memory associated with the connection then this
 ** routine is a harmless no-op.
-如果没有与该连接有关的共享内存，那么这个例程是一种无害的空操作。
 */
 static int unixShmUnmap(
   sqlite3_file *fd,               /* The underlying database file */
   int deleteFlag                  /* Delete shared-memory if true */
-){                                          /*为真则删除共享内存*/
-  unixShm *p;                     /* The connection to be closed 关闭连接*/
+){
+  unixShm *p;                     /* The connection to be closed */
   unixShmNode *pShmNode;          /* The underlying shared-memory file */
   unixShm **pp;                   /* For looping over sibling connections */
-                                        /*同层连接循环*/
   unixFile *pDbFd;                /* The underlying database file */
-                                    /*底层数据库文件*/
 
   pDbFd = (unixFile*)fd;
   p = pDbFd->pShm;
@@ -4810,19 +5119,18 @@ static int unixShmUnmap(
   assert( pShmNode->pInode==pDbFd->pInode );
 
   /* Remove connection p from the set of connections associated
-  ** with pShmNode 从与pShmNode有关的连接设置移除连接p*/
+  ** with pShmNode */
   sqlite3_mutex_enter(pShmNode->mutex);
   for(pp=&pShmNode->pFirst; (*pp)!=p; pp = &(*pp)->pNext){}
   *pp = p->pNext;
 
-  /* Free the connection p 释放连接p*/
+  /* Free the connection p */
   sqlite3_free(p);
   pDbFd->pShm = 0;
   sqlite3_mutex_leave(pShmNode->mutex);
 
   /* If pShmNode->nRef has reached 0, then close the underlying
   ** shared-memory file, too */
-/*如果pShmNode->nRef达到0，那么也关闭底层共享内存文件*/
   unixEnterMutex();
   assert( pShmNode->nRef>0 );
   pShmNode->nRef--;
@@ -4845,7 +5153,6 @@ static int unixShmUnmap(
 
 /*
 ** Here ends the implementation of all sqlite3_file methods.
-在这里结束所有sqlite3_file方法的实现
 **
 ********************** End sqlite3_file Methods *******************************
 ******************************************************************************/
@@ -4857,24 +5164,27 @@ static int unixShmUnmap(
 ** sqlite3_io_methods object for a particular database file.  The pAppData
 ** field of the sqlite3_vfs VFS objects are initialized to be pointers to
 ** the correct finder-function for that VFS.
-这个部分包含sqlite3_io_methods对象定义，其是实现各种文件锁定策略。它也包含
-“探测”函数的定义。一个探测函数被用于为一个特定数据库文件定位适当的
-sqlite3_io_methods对象。the sqlite3_vfs VFS对象的pAppData字段被初始化来为这个
-VFS指向正确的探测函数。
 **
 ** Most finder functions return a pointer to a fixed sqlite3_io_methods
 ** object.  The only interesting finder-function is autolockIoFinder, which
 ** looks at the filesystem type and tries to guess the best locking
 ** strategy from that.
-大多探测函数返回一个指向固定sqlite3_io_methods对象的指针。唯一有趣的探测函数
-是autolockIoFinder，它查看文件系统类型并试图从其推测出最好的锁策略。
+** 
+** 此分区包含实现各种文件锁定策略的sqlite3_io_methods对象定义。 
+** 还包含“finder”函数的定义。 finder函数用于为特定数据库文件
+** 定位到适当的sqlite3_io_methods对象。 sqlite3_vfs VFS对象的pAppData字段
+** 被初始化为指向该VFS的正确finder函数的指针。
 **
-** For finder-funtion F, two objects are created:为探测函数F，创建了两个对象：
+** 大多数finder函数返回一个指向sqlite3_io_methods对象固定区域的指针。
+** 有趣的是finder函数是autolockIoFinder，它查看文件系统类型，并尝试
+** 从中得到最佳锁定策略。
 **
-**    (1) The real finder-function named "FImpt()".真正的探测函数命名为FImpt()。
+** For finder-funtion F, two objects are created:
+**
+**    (1) The real finder-function named "FImpt()".
 **
 **    (2) A constant pointer to this function named just "F".
-**                指向这个函数的常量指针命名为"F"
+**
 **
 ** A pointer to the F pointer is used as the pAppData value for VFS
 ** objects.  We have to do this instead of letting pAppData point
@@ -4883,14 +5193,28 @@ VFS指向正确的探测函数。
 **
 **
 ** Each instance of this macro generates two objects:
-**                  每一个该宏的实例生成两个对象：
+**
 **   *  A constant sqlite3_io_methods object call METHOD that has locking
 **      methods CLOSE, LOCK, UNLOCK, CKRESLOCK.
-**   一个常量sqlite3_io_methods对象调用有关闭，加锁，解锁，CKRESLOCK
-     锁方法的方法。
+**
 **   *  An I/O method finder function called FINDER that returns a pointer
 **      to the METHOD object in the previous bullet.
-一个I/O方法探测函数成为FINDER，其返回一个在之前bullet的指向METHOD对象的指针。
+**
+** 对于finder-funtion F，创建两个对象：
+**
+**（1）名为“FImpt()”的finder函数。
+**
+**（2）这个函数的常量指针，命名为“F”。
+**
+**
+** 一个指向指针F的指针用作VFS对象的pAppData值.我们必须这样做，
+** 而不是让pAppData直接指向finder函数，因为C90规则阻止将void *转换为函数指针。
+**
+** 这个宏的每个实例都会生成两个对象：
+**  *常量sqlite3_io_methods对象调用METHOD有锁定方法CLOSE，LOCK，UNLOCK，CKRESLOCK。
+**
+**  *FINDER的I / O方法查找器函数，返回一个指向上一个项目符号中的METHOD对象的指针。
+**
 */
 #define IOMETHODS(FINDER, METHOD, VERSION, CLOSE, LOCK, UNLOCK, CKLOCK)      \
 static const sqlite3_io_methods METHOD = {                                   \
@@ -4923,13 +5247,15 @@ static const sqlite3_io_methods *(*const FINDER)(const char*,unixFile *p)    \
 ** Here are all of the sqlite3_io_methods objects for each of the
 ** locking strategies.  Functions that return pointers to these methods
 ** are also created.
-这里是所有的每个锁定策略的sqlite3_io_methods对象。返回指向这些方法的指针的
-函数也被创建。
+**
+** 下面是每个锁定策略的所有sqlite3_io_methods对象。
+** 创建之后返回指向这些方法的指针。
+**
 */
 IOMETHODS(
-  posixIoFinder,            /* Finder function name 探测函数名*/
+  posixIoFinder,            /* Finder function name */
   posixIoMethods,           /* sqlite3_io_methods object name */
-  2,                        /* shared memory is enabled 共享内存是禁用的*/
+  2,                        /* shared memory is enabled */
   unixClose,                /* xClose method */
   unixLock,                 /* xLock method */
   unixUnlock,               /* xUnlock method */
@@ -4998,10 +5324,13 @@ IOMETHODS(
 ** proxy locking is located much further down in the file.  But we need
 ** to go ahead and define the sqlite3_io_methods and finder function
 ** for proxy locking here.  So we forward declare the I/O methods.
-代理锁定方法在某种意义上是一种“超级方法”，它打开壳和锁文件二级文件描述符，它
-在这些二级文件上，使用代理，点文件，AFP和flock()加锁方法。由于这个原因，
-实现代理锁定的该部分位于文件中更远。但是我们需要继续，并为这里的代理锁定
-定义sqlite3_io_methods和探测函数。所以我们提出声明I / O方法。
+**
+** 代理锁定方法是一个“超级方法”，它打开conch和锁定文件的
+** 辅助文件描述符，在这些辅助文件上使用proxy，dot文件，AFP和
+** flock()锁定方法。 出于这个原因，由文件层的底层代码实现锁代理。
+** 但是我们需要在这里为锁代理定义sqlite3_io_methods和finder函数。
+** 因此我们在这里进行I / O方法前向声明。
+
 */
 #if defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE
 static int proxyClose(sqlite3_file*);
@@ -5020,12 +5349,11 @@ IOMETHODS(
 #endif
 
 /* nfs lockd on OSX 10.3+ doesn't clear write locks when a read lock is set */
-/*当设置了一个读锁的时候，锁在OSX 10.3+的nfs没有清除写锁.*/
 #if defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE
 IOMETHODS(
-  nfsIoFinder,               /* Finder function name 探测函数名*/
+  nfsIoFinder,               /* Finder function name */
   nfsIoMethods,              /* sqlite3_io_methods object name */
-  1,                         /* shared memory is disabled 共享内存是禁用的*/
+  1,                         /* shared memory is disabled */
   unixClose,                 /* xClose method */
   unixLock,                  /* xLock method */
   nfsUnlock,                 /* xUnlock method */
@@ -5038,20 +5366,22 @@ IOMETHODS(
 ** This "finder" function attempts to determine the best locking strategy 
 ** for the database file "filePath".  It then returns the sqlite3_io_methods
 ** object that implements that strategy.
-这种“探测”函数试图为数据库文件"filePath"，确定最佳锁定策略。然后它返回
-实现这一策略的sqlite3_io_methods对象。
 **
-** This is for MacOSX only.这仅供MacOSX。
+** This is for MacOSX only.
+**
+** 这个“finder”函数尝试确定数据库文件“filePath”的最佳锁策略。 
+** 然后返回实现该策略的sqlite3_io_methods对象。
+** 但是这仅适用于MacOSX平台。
+**
 */
 static const sqlite3_io_methods *autolockIoFinderImpl(
-  const char *filePath,    /* name of the database file 数据库文件名称*/
+  const char *filePath,    /* name of the database file */
   unixFile *pNew           /* open file object for the database file */
-){                                /*打开数据库文件的文件对象*/
+){
   static const struct Mapping {
     const char *zFilesystem;              /* Filesystem type name */
-                                            /*文件系统类型名称*/
     const sqlite3_io_methods *pMethods;   /* Appropriate locking method */
-  } aMap[] = {                                  /*适当的锁定方法*/
+  } aMap[] = {
     { "hfs",    &posixIoMethods },
     { "ufs",    &posixIoMethods },
     { "afpfs",  &afpIoMethods },
@@ -5066,7 +5396,6 @@ static const sqlite3_io_methods *autolockIoFinderImpl(
   if( !filePath ){
     /* If filePath==NULL that means we are dealing with a transient file
     ** that does not need to be locked. */
-    /*如果filePath==NULL，意味着我们正在处理一个不需要加锁的临时文件*/
     return &nolockIoMethods;
   }
   if( statfs(filePath, &fsInfo) != -1 ){
@@ -5083,8 +5412,10 @@ static const sqlite3_io_methods *autolockIoFinderImpl(
   /* Default case. Handles, amongst others, "nfs".
   ** Test byte-range lock using fcntl(). If the call succeeds, 
   ** assume that the file-system supports POSIX style locks. 
-默认情况下。处理，除了其他，"网络文件系统"。
-用fcntl()测试锁的字节范围。如果调用成功，假设文件系统支持POSIX样式锁。
+  **
+  ** 默认情况下，所有句柄，包括“nfs”句柄。
+  ** 使用fcntl()测试用于锁定的字节范围。 如果调用成功，
+  ** 则假定文件系统支持POSIX锁。
   */
   lockInfo.l_len = 1;
   lockInfo.l_start = 0;
@@ -5110,29 +5441,29 @@ static const sqlite3_io_methods
 ** This "finder" function attempts to determine the best locking strategy 
 ** for the database file "filePath".  It then returns the sqlite3_io_methods
 ** object that implements that strategy.
-这种“发现者”功能试图确定数据库文件“文件路径的”最佳锁定策略。然后它返回
-sqlite3_io_methods对象实现这一策略。
 **
 ** This is for VXWorks only.
-这是仅供VXWorks。
+**
+** “finder”函数试图确定数据库文件“filePath”的最佳锁定策略。 
+** 返回值为实现该策略的sqlite3_io_methods对象。
+** 
+** 这仅适用于VXWorks平台。
+**
 */
 static const sqlite3_io_methods *autolockIoFinderImpl(
-  const char *filePath,    /* name of the database file 数据库文件名称*/
-  unixFile *pNew           /* the open file object 打开文件对象*/
+  const char *filePath,    /* name of the database file */
+  unixFile *pNew           /* the open file object */
 ){
   struct flock lockInfo;
 
   if( !filePath ){
     /* If filePath==NULL that means we are dealing with a transient file
-    ** that does not need to be locked. 
-    如果文件路径为空，意味着我们正在处理一个不需要加锁的临时文件*/
+    ** that does not need to be locked. */
     return &nolockIoMethods;
   }
 
   /* Test if fcntl() is supported and use POSIX style locks.
   ** Otherwise fall back to the named semaphore method.
-测试是否支持fcntl()，并用POSIX风格锁。
-否则回滚到指定的信号量方法。
   */
   lockInfo.l_len = 1;
   lockInfo.l_start = 0;
@@ -5151,7 +5482,6 @@ static const sqlite3_io_methods
 
 /*
 ** An abstract type for a pointer to a IO method finder function:
-io方法查找函数指针的抽象类型
 */
 typedef const sqlite3_io_methods *(*finder_type)(const char*,unixFile*);
 
@@ -5161,18 +5491,22 @@ typedef const sqlite3_io_methods *(*finder_type)(const char*,unixFile*);
 **
 ** This division contains the implementation of methods on the
 ** sqlite3_vfs object.
+** 
+** 这个部分包含实现sqlite3_vfs对象的方法。
 */
-//这个分部包含在sqlite3_vfs对象上操作的相关实现方法
+
 /*
 ** Initialize the contents of the unixFile structure pointed to by pId.
-//初始化被pId指向的unixFile的内容。
+**
+** 初始化指向unixFile结构的pId。
+**
 */
 static int fillInUnixFile(
-  sqlite3_vfs *pVfs,      /* Pointer to vfs object 指向vfs对象的指针 */
-  int h,                  /* Open file descriptor of file being opened 被打开文件的打开文件描述器*/
-  sqlite3_file *pId,      /* Write to the unixFile structure here 在这里写入unixFile结构*/
-  const char *zFilename,  /* Name of the file being opened 正在被打开文件的文件名*/
-  int ctrlFlags           /* Zero or more UNIXFILE_* values 零或更多UNIXFILE_*值*/
+  sqlite3_vfs *pVfs,      /* Pointer to vfs object */
+  int h,                  /* Open file descriptor of file being opened */
+  sqlite3_file *pId,      /* Write to the unixFile structure here */
+  const char *zFilename,  /* Name of the file being opened */
+  int ctrlFlags           /* Zero or more UNIXFILE_* values */
 ){
   const sqlite3_io_methods *pLockingStyle;
   unixFile *pNew = (unixFile *)pId;
@@ -5183,7 +5517,9 @@ static int fillInUnixFile(
   /* Usually the path zFilename should not be a relative pathname. The
   ** exception is when opening the proxy "conch" file in builds that
   ** include the special Apple locking styles.
-  // 通常zFilename的路径不应是相对路径。例外是当打开内建在包含特殊Apple锁风格的"conch"文件时。
+  **
+  ** 通常情况下路径zFilename不应该是相对路径名。唯一的例外是在Apple风格的锁机制中
+  ** 创建时打开"conch"代理文件。
   */
 #if defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE
   assert( zFilename==0 || zFilename[0]=='/' 
@@ -5192,7 +5528,7 @@ static int fillInUnixFile(
   assert( zFilename==0 || zFilename[0]=='/' );
 #endif
 
-  /* No locking occurs in temporary files */ //在临时文件中没有上锁事件发生
+  /* No locking occurs in temporary files */
   assert( zFilename!=0 || (ctrlFlags & UNIXFILE_NOLOCK)!=0 );
 
   OSTRACE(("OPEN    %-3d %s\n", h, zFilename));
@@ -5223,9 +5559,13 @@ static int fillInUnixFile(
 #if SQLITE_ENABLE_LOCKING_STYLE
     /* Cache zFilename in the locking context (AFP and dotlock override) for
     ** proxyLock activation is possible (remote proxy is based on db name)
-    ** zFilename remains valid until file is closed, to support */
-    //为了代理锁激活在锁定上下文的（AFP和点锁重写）寄存器zFilename变的可能（远程代理基于数据库名）
-    //zFilename知道文件关闭都保留了有效性
+    ** zFilename remains valid until file is closed, to support 
+    ** 
+    ** 为实现在锁定上下文（AFP和dotlock覆盖）中对缓存的zFilename
+    ** 进行proxyLock激活，（基于数据库名称实现远程代理）zFilename在文件
+    ** 关闭之前保持.
+    ** 
+    */
     pNew->lockingContext = (void*)zFilename;
 #endif
   }
@@ -5245,11 +5585,6 @@ static int fillInUnixFile(
       **   (a) A call to fstat() failed.
       **   (b) A malloc failed.
       **
-      //如果一个错误发生在findInodeInfo()，立即关闭文件描述符，之前释放互斥锁。
-      //findInodeInfo()将在两个情境下失败
-      //      (a)对fstat()的调用失败
-      //      (b)一个内存分配失败
-      **
       ** Scenario (b) may only occur if the process is holding no other
       ** file descriptors open on the same file. If there were other file
       ** descriptors on this file, then no malloc would be required by
@@ -5257,16 +5592,24 @@ static int fillInUnixFile(
       ** handle h - as it is guaranteed that no posix locks will be released
       ** by doing so.
       **
-      //情景(b)可能只发生在如果相同文件中此进程没有保持其他文件描述符的情况。
-      //如果没有其他文件描述符在这个文件中，则findInodeInfo()不会被要求分配。
-      //如果在这种情况下，他是非常安全的去关闭h句柄-如果这么做
-      //它会被保证非可移植性操作系统接口锁将会被释放
       ** If scenario (a) caused the error then things are not so safe. The
       ** implicit assumption here is that if fstat() fails, things are in
       ** such bad shape that dropping a lock or two doesn't matter much.
+      **
+      ** 如果在findInodeInfo（）中发生错误，则在释放互斥体之前
+      ** 立即关闭文件描述符。findInodeInfo（）可能会在这两种情况下失败：
+      **
+      **（a）对fstat（）的调用失败。
+      **（b）malloc失败。
+      **
+      ** 方案（b）可能仅在进程没有在同一文件上保持其他文件描述符
+      ** 打开时发生。如果此文件上还有其他文件描述符，那么findInodeInfo()函数
+      ** 就不需要malloc。在这种情况下，关闭句柄是相当安全的，因为它保证
+      ** 不会这样做释放posix锁。
+      **
+      ** 如果情况（a）导致错误，那么操作就不那么安全。这里的隐含假设是，
+      ** 如果fstat（）失败，既然事情已经这样糟糕，丢弃一两个锁也无关紧要。
       */
-      //如果情景(a)发生错误将不会如此安全。这里隐含的假设是fstat()调用失败，
-      //在这种抛出一两个锁的坏的模型无关紧要。
       robust_close(pNew, h, __LINE__);
       h = -1;
     }
@@ -5277,8 +5620,9 @@ static int fillInUnixFile(
   else if( pLockingStyle == &afpIoMethods ){
     /* AFP locking uses the file path so it needs to be included in
     ** the afpLockingContext.
+    **
+    ** AFP锁需要使用文件路径，因此它需要包含在afpLockingContext中。
     */
-    //AFP 锁定使用文件路径，所以它需要被包含在afpLockingContext中。
     afpLockingContext *pCtx;
     pNew->lockingContext = pCtx = sqlite3_malloc( sizeof(*pCtx) );
     if( pCtx==0 ){
@@ -5286,8 +5630,12 @@ static int fillInUnixFile(
     }else{
       /* NB: zFilename exists and remains valid until the file is closed
       ** according to requirement F11141.  So we do not need to make a
-      ** copy of the filename. */
-      //附注：zFilename存在,仍然有效,直到文件根据F11141要求关闭。所以我们不需要文件的副本。
+      ** copy of the filename. 
+      **
+      ** 注意：zFilename存在并始终保持有效，直到根据F11141要求
+      ** 关闭文件。 所以我们不需要复制文件名。
+      **
+      */
       pCtx->dbPath = zFilename;
       pCtx->reserved = 0;
       srandomdev();
@@ -5306,8 +5654,9 @@ static int fillInUnixFile(
   else if( pLockingStyle == &dotlockIoMethods ){
     /* Dotfile locking uses the file path so it needs to be included in
     ** the dotlockLockingContext 
+    **
+    ** Dotfile锁需要使用文件路径，因此需要包含在dotlockLockingContext中
     */
-    //点文件锁定使用文件路径所以它需要被包含在dotlockLockingContext
     char *zLockFile;
     int nFilename;
     assert( zFilename!=0 );
@@ -5325,8 +5674,9 @@ static int fillInUnixFile(
   else if( pLockingStyle == &semIoMethods ){
     /* Named semaphore locking uses the file path so it needs to be
     ** included in the semLockingContext
+    **
+    ** 信号量标记锁需要使用文件路径，因此它需要包含在semLockingContext中
     */
-    //被命名为信号锁的使用文件路径所以它需要被包含在semLockingContext
     unixEnterMutex();
     rc = findInodeInfo(pNew, &pNew->pInode);
     if( (rc==SQLITE_OK) && (pNew->pInode->pSem==NULL) ){
@@ -5368,10 +5718,10 @@ static int fillInUnixFile(
 /*
 ** Return the name of a directory in which to put temporary files.
 ** If no suitable temporary file directory can be found, return NULL.
+** 
+** 返回存放临时文件的目录名称。如果没有找到合适的
+** 临时文件目录，返回值为NULL。
 */
-
-//返回放置临时文件的路径名。
-//如火没有合适的临时文件路径名被找到，返回NULL。
 static const char *unixTempFileDir(void){
   static const char *azDirs[] = {
      0,
@@ -5379,7 +5729,7 @@ static const char *unixTempFileDir(void){
      "/var/tmp",
      "/usr/tmp",
      "/tmp",
-     0        /* List terminator *///列表结束符
+     0        /* List terminator */
   };
   unsigned int i;
   struct stat buf;
@@ -5401,8 +5751,11 @@ static const char *unixTempFileDir(void){
 ** Create a temporary file name in zBuf.  zBuf must be allocated
 ** by the calling process and must be big enough to hold at least
 ** pVfs->mxPathname bytes.
+**
+** 在zBuf中创建临时文件名。 zBuf大小必须由调用进程分配，
+** 且必须大到存放所有pVfs-> mxPathname字节。
+**
 */
-//在zBuf创建临时文件名。zBuf必须通过调用程序被分配，而且必须足够大去承载至少和一样的pVfs->mxPathname字节数
 static int unixGetTempname(int nBuf, char *zBuf){
   static const unsigned char zChars[] =
     "abcdefghijklmnopqrstuvwxyz"
@@ -5414,17 +5767,21 @@ static int unixGetTempname(int nBuf, char *zBuf){
   /* It's odd to simulate an io-error here, but really this is just
   ** using the io-error infrastructure to test that SQLite handles this
   ** function failing. 
+  **
+  ** 在这里模拟一个io错误看起来有点奇怪，但实际上这只是
+  ** 使用这个io错误来测试SQLite对于失败函数的处理。
   */
-  //在这里模拟个io-error看似很奇怪，但事实上这仅仅是使用io-error基础架构去测试SQLite持有这个方法是否错误。
-  SimulateIOError( return SQLITE_IOERR );使用io错误
+  SimulateIOError( return SQLITE_IOERR );
 
   zDir = unixTempFileDir();
   if( zDir==0 ) zDir = ".";
 
   /* Check that the output buffer is large enough for the temporary file 
   ** name. If it is not, return SQLITE_ERROR.
+  ** 
+  ** 检查输出缓冲区是否可以存放临时文件名。
+  ** 如果不可以，返回值为SQLITE_ERROR。
   */
-  //检查输出缓冲对于临时文件名是否足够大。如果不够，返回SQLITE_ERROR。
   if( (strlen(zDir) + strlen(SQLITE_TEMP_FILE_PREFIX) + 18) >= (size_t)nBuf ){
     return SQLITE_ERROR;
   }
@@ -5447,9 +5804,11 @@ static int unixGetTempname(int nBuf, char *zBuf){
 ** Routine to transform a unixFile into a proxy-locking unixFile.
 ** Implementation in the proxy-lock division, but used by unixOpen()
 ** if SQLITE_PREFER_PROXY_LOCKING is defined.
+**
+** 将unixFile转换为unixFile代理锁。在代理锁分区中实现.
+** 如果定义了SQLITE_PREFER_PROXY_LOCKING，就由unixOpen()使用.
+**
 */
-//例程将unixFile转换成proxy-locking unixFile.
-//实现在proxy-lock分块，但是如果SQLITE_PREFER_PROXY_LOCKING被定义，被使用通过unixOpen()。
 static int proxyTransformUnixFile(unixFile*, const char*);
 #endif
 
@@ -5459,8 +5818,6 @@ static int proxyTransformUnixFile(unixFile*, const char*);
 ** zPath with SQLITE_OPEN_XXX flags matching those passed as the second
 ** argument to this function.
 **
-//搜索一个未被使用在数据库文件中被打开的文件描述符（不是日志文件或主日志文件）,
-//这个数据库文件通过带有SQLITE_OPEN_XXX标志的路径名zPath，和在这个函数中传入的第二个参数相匹配。
 ** Such a file descriptor may exist if a database connection was closed
 ** but the associated file descriptor could not be closed because some
 ** other file descriptor open on the same file is holding a file-lock.
@@ -5468,12 +5825,22 @@ static int proxyTransformUnixFile(unixFile*, const char*);
 ** describing "Posix Advisory Locking" at the start of this file for 
 ** further details. Also, ticket #4018.
 **
-//这样一个文件描述符可以如果数据库连接被关闭，但相关的文件描述符不能被关闭，因为在同一个文件打开其它的文件描述符是持有file-lock.
-//在unixclose()功能的评论和描述"冗长的评论存在POSIX咨询锁定"在进一步的细节，该文件的开始。
 ** If a suitable file descriptor is found, then it is returned. If no
 ** such file descriptor is located, -1 is returned.
+**
+** 在数据库文件（而不是日志或主日志文件）搜索路径名为zPath标识的
+** 已打开未使用的文件描述符，且将SQLITE_OPEN_XXX标志与作为此函数的
+** 第二个参数传递的标志相匹配。
+**
+** 这样的文件描述符可能存在，如果数据库连接关闭，但相关的文件描述符
+** 无法关闭，因为在同一个文件上打开的一些其他文件描述符持有文件锁。
+** 请参阅unixClose（）函数中的注释和关于“Posix Advisory Locking”的全部注释，
+** 从而获取更多详细信息。 此外，可以参考＃4018。
+**
+** 如果找到合适的文件描述符，则返回这个文件描述符。 如果没有找到
+** 这样的文件描述符，则返回-1。
+**
 */
-//如果合适的文件描述符被找到，然后将它返回。如果描述符被设置，－1被返回。
 static UnixUnusedFd *findReusableFd(const char *zPath, int flags){
   UnixUnusedFd *pUnused = 0;
 
@@ -5481,11 +5848,15 @@ static UnixUnusedFd *findReusableFd(const char *zPath, int flags){
   ** vxworks would not benefit from the change (it might, we're not sure),
   ** but because no way to test it is currently available. It is better 
   ** not to risk breaking vxworks support for the sake of such an obscure 
-  ** feature.  */
-  //在vxworks不会查找一个未被使用的文件描述符。不是因为vxworks不会从改变中受益（这可能，但是我们不确定），
-  //但是因为没有方法去测试当前的可用性。最好不要冒险中断vxworks支持为了这个复杂的特性。
-#if !OS_VXWORK
-  struct stat sStat;                   /* Results of stat() call *///stat()调用的结果。
+  ** feature.  
+  **
+  ** 不要在vxworks上搜索未使用的文件描述符。不是因为vxworks不会从改变中
+  ** 得到某种好处（它可能，我们不确定），但是在目前没有可用的方法进行测试。
+  ** 所以最好不要为这样一个模糊的功能而破坏原始的vxworks函数。
+  ** 
+  */
+#if !OS_VXWORKS
+  struct stat sStat;                   /* Results of stat() call */
 
   /* A stat() call may fail for various reasons. If this happens, it is
   ** almost certain that an open() call on the same path will also fail.
@@ -5494,10 +5865,16 @@ static UnixUnusedFd *findReusableFd(const char *zPath, int flags){
   ** descriptor on the same path, fail, and return an error to SQLite.
   **
   ** Even if a subsequent open() call does succeed, the consequences of
-  ** not searching for a resusable file descriptor are not dire.  */
-  //一个stat()调用可能因为诸多原因失败。如果这种情况发生，如果几乎确定一个open()调用在同样的路径将也会失败。
-  //由于这个原因，如果一个在stat()调用中错误发生，它将被忽略而且－1返回。
-  //调用器将尝试打开一个新的文件描述符在相同的文件名，失败，然后返回一个错误SQLite。
+  ** not searching for a resusable file descriptor are not dire.  
+  **
+  ** stat()的调用可能由于各种原因失败。如果发生这种情况，几乎可以肯定的是
+  ** 在同一路径上的open()调用也会失败。因此，如果在stat()调用中发生错误，则
+  ** 忽略该错误，并返回-1。 调用者将尝试在同一路径上打开一个新的文件描述符，
+  ** 很大可能会失败，则返回一个错误给SQLite。
+  **
+  ** 即使随后的open（）调用确实成功，不搜索可重用文件描述符的后果也不可怕。
+  **
+  */
   if( 0==osStat(zPath, &sStat) ){
     unixInodeInfo *pInode;
 
@@ -5528,9 +5905,6 @@ static UnixUnusedFd *findReusableFd(const char *zPath, int flags){
 ** written to *pMode. If an IO error occurs, an SQLite error code is 
 ** returned and the value of *pMode is not modified.
 **
-//这个方法被unixOpen()调用，用来决定unix创建新文件时的许可。如果没有错误发生，则SQLITE_OK被返回，
-//并且一个适合的值传入open(2)的第三个参数被写到*pMode。如果一个IO错误发生，
-//一个SQLite错误代码被返回并且*pMode的值不会被修改
 ** In most cases cases, this routine sets *pMode to 0, which will become
 ** an indication to robust_open() to create the file using
 ** SQLITE_DEFAULT_FILE_PERMISSIONS adjusted by the umask.
@@ -5540,44 +5914,46 @@ static UnixUnusedFd *findReusableFd(const char *zPath, int flags){
 ** possible, WAL and journal files are created using the same permissions 
 ** as the associated database file.
 **
-//在大多数的情况下，这个历程会设置*pMode为0，这个将会成为使用SQLITE_DEFAULT_FILE_PERMISSIONS适应umask的
-//robust_open()的迹象。但是如果被打开的文件是一个WAL或者通常的日志文件，
-//则这个方法问询文件系统的许可在相应的数据库文件，并且设置*pMode为这个值。不论何时可能，
-//WAL和日志文件被创建使用相同的许可像相关联的数据库文件。
 ** If the SQLITE_ENABLE_8_3_NAMES option is enabled, then the
 ** original filename is unavailable.  But 8_3_NAMES is only used for
 ** FAT filesystems and permissions do not matter there, so just use
 ** the default permissions.
+** 
+** 此函数由unixOpen()调用从而确定用于创建新文件的unix权限。
+** 如果没有发生错误，返回值为SQLITE_OK，并将适合的值作为第三个参数
+** 传递给open(2)写入* pMode。如果发生IO错误，则返回SQLite错误代码，且不
+** 修改* pMode的值。
+**
+** 在大多数情况下，此例程将*pMode设置为0，这就是调用robust_open（）的标志，
+** 使用由umask调整的SQLITE_DEFAULT_FILE_PERMISSIONS创建文件。但是，如果要打开的
+** 文件是WAL或常规的日志文件，此函数将查询文件系统从而获取相应数据库
+** 文件的权限，并将*pMode设置为该值。可能的情况下，就使用和对应数据库文件
+** 相同的权限创建WAL和日志文件。
+**
+** 如果启用了SQLITE_ENABLE_8_3_NAMES选项，则原始文件名不可用。但8_3_NAMES只用于
+** FAT文件系统，隐含的文件权限在这里并不重要，所以只是使用默认权限。
+**
 */
-//如果SQLITE_ENABLE_8_3_NAMES选项可用，则这个原始文件名将不可用。
-//但是8_3_NAMES只被用作FAT文件系统并且许可在这里没关系，所以紧紧使用默认许可。
 static int findCreateFileMode(
   const char *zPath,              /* Path of file (possibly) being created */
-                                  //正在被创建文件(可能)的路径
   int flags,                      /* Flags passed as 4th argument to xOpen() */
-                                  //传入xOpen()的第四个参数的标记
-  mode_t *pMode,                  /* OUT: Permissions to open file with */、
-                                  //打开文件的许可
+  mode_t *pMode,                  /* OUT: Permissions to open file with */
   uid_t *pUid,                    /* OUT: uid to set on the file */
-                                  //设置到此文件的uid
   gid_t *pGid                     /* OUT: gid to set on the file */
-                                  //设置到此文件的gid
 ){
   int rc = SQLITE_OK;             /* Return Code */
-                                  //返回代码
   *pMode = 0;
   *pUid = 0;
   *pGid = 0;
   if( flags & (SQLITE_OPEN_WAL|SQLITE_OPEN_MAIN_JOURNAL) ){
-    char zDb[MAX_PATHNAME+1];     /* Database file path */ //数据库文件路径
-    int nDb;                      /* Number of valid bytes in zDb */ //zDb中的可用字节数
-    struct stat sStat;            /* Output of stat() on database file *///stat()在数据库文件上的输出
+    char zDb[MAX_PATHNAME+1];     /* Database file path */
+    int nDb;                      /* Number of valid bytes in zDb */
+    struct stat sStat;            /* Output of stat() on database file */
 
     /* zPath is a path to a WAL or journal file. The following block derives
     ** the path to the associated database file from zPath. This block handles
     ** the following naming conventions:
     **
-    //zPath时一个指向WAL的路径活着一个日志文件。接下来的块源自从zPath相关联数据库。这个块持有接下多命名大会
     **   "<path to db>-journal"
     **   "<path to db>-wal"
     **   "<path to db>-journalNN"
@@ -5585,8 +5961,18 @@ static int findCreateFileMode(
     **
     ** where NN is a decimal number. The NN naming schemes are 
     ** used by the test_multiplex.c module.
+    **
+    ** zPath是WAL或日志文件的路径。 可以从zPath导出该块文件
+    ** 到相关数据库文件的路径。块文件的句柄使用下面这些约定的命名方法：
+    **
+    **“<path to db> -journal”
+    **“<path to db> -wal”
+    **“<path to db> -journalNN”
+    **“<path to db> -walNN”
+    **
+    **其中NN是十进制数。 NN命名方案由test_multiplex.c模块确定。
+    **
     */
-    //NN是一个小数。NN命名模式使用test_multiplex.c模块。
     nDb = sqlite3Strlen30(zPath) - 1; 
 #ifdef SQLITE_ENABLE_8_3_NAMES
     while( nDb>0 && sqlite3Isalnum(zPath[nDb]) ) nDb--;
@@ -5616,10 +6002,8 @@ static int findCreateFileMode(
 
 /*
 ** Open the file zPath.
-//打开文件zPath
 ** 
 ** Previously, the SQLite OS layer used three functions in place of this
-//在此前，SQLite操作系统层使用三个函数在这里
 ** one:
 **
 **     sqlite3OsOpenReadWrite();
@@ -5627,7 +6011,6 @@ static int findCreateFileMode(
 **     sqlite3OsOpenExclusive();
 **
 ** These calls correspond to the following combinations of flags:
-//这些调用和下面的混合体的标志相符合
 **
 **     ReadWrite() ->     (READWRITE | CREATE)
 **     ReadOnly()  ->     (READONLY) 
@@ -5638,24 +6021,38 @@ static int findCreateFileMode(
 ** file handle closed. To achieve the same effect using this new 
 ** interface, add the DELETEONCLOSE flag to those specified above for 
 ** OpenExclusive().
+**
+** 以前，SQLite操作系统层使用这三个函数来代替这一个函数：
+**
+** 	sqlite3OsOpenReadWrite();
+** 	sqlite3OsOpenReadOnly();
+** 	sqlite3OsOpenExclusive();
+**
+** 这些调用和以下的标志组合相对应：
+**
+** 	ReadWrite() - >(READWRITE | CREATE)
+** 	ReadOnly() - >(READONLY)
+** 	OpenExclusive() - >(READWRITE | CREATE | EXCLUSIVE)
+**
+** 旧的OpenExclusive()接受一个布尔参数 - “delFlag”。如果为true，则
+** 文件被配置在文件句柄关闭时自动删除。为了在使用新接口时
+** 实现相同的效果，请将DELETEONCLOSE标志添加到OpenExclusive()的指定参数处。
+**
 */
-//老的OpenExclusive()接受一个布尔变量- "delFlag"。如果为真，这个文件被自动配置为当文件句柄关闭时删除。
-//为了在使用新的接口达到相同的效果，添加DELETEONCLOSE标记在以上对OpenExclusive()具体说明OpenExclusive()。
 static int unixOpen(
   sqlite3_vfs *pVfs,           /* The VFS for which this is the xOpen method */
-                                //xOpen方法的VFS
-  const char *zPath,           /* Pathname of file to be opened */ //被打开文件的路径名
-  sqlite3_file *pFile,         /* The file descriptor to be filled in */ //被装满的文件描述符
-  int flags,                   /* Input flags to control the opening */ //控制打开的输入标记
-  int *pOutFlags               /* Output flags returned to SQLite core */ //返回SQLite内核的输出标记
+  const char *zPath,           /* Pathname of file to be opened */
+  sqlite3_file *pFile,         /* The file descriptor to be filled in */
+  int flags,                   /* Input flags to control the opening */
+  int *pOutFlags               /* Output flags returned to SQLite core */
 ){
   unixFile *p = (unixFile *)pFile;
-  int fd = -1;                   /* File descriptor returned by open() */ //open()返回的文件描述符
-  int openFlags = 0;             /* Flags to pass to open() */ //传入open()的标记
-  int eType = flags&0xFFFFFF00;  /* Type of file to open */  //打开文件的类型
-  int noLock;                    /* True to omit locking primitives */ //为真则删除原始锁
-  int rc = SQLITE_OK;            /* Function Return Code */  //函数返回代码
-  int ctrlFlags = 0;             /* UNIXFILE_* flags */    //UNIXFILE_*标记
+  int fd = -1;                   /* File descriptor returned by open() */
+  int openFlags = 0;             /* Flags to pass to open() */
+  int eType = flags&0xFFFFFF00;  /* Type of file to open */
+  int noLock;                    /* True to omit locking primitives */
+  int rc = SQLITE_OK;            /* Function Return Code */
+  int ctrlFlags = 0;             /* UNIXFILE_* flags */
 
   int isExclusive  = (flags & SQLITE_OPEN_EXCLUSIVE);
   int isDelete     = (flags & SQLITE_OPEN_DELETEONCLOSE);
@@ -5672,9 +6069,11 @@ static int unixOpen(
   /* If creating a master or main-file journal, this function will open
   ** a file-descriptor on the directory too. The first time unixSync()
   ** is called the directory file descriptor will be fsync()ed and close()d.
+  **
+  ** 如果创建一个主文件或主文件日志，函数将会在目录上打开
+  ** 一个文件描述符。 第一次调用unixSync（）时，目录文件描述符
+  ** 将是fsync（）ed和close（）d。
   */
-  //如果创建一个主的或主文件日志，这个方法也会打开一个在本目录的文件描述符。第一次unixSync()被调用，
-  //这个目录文件描述符将被fsync()或close()d。
   int syncDir = (isCreate && (
         eType==SQLITE_OPEN_MASTER_JOURNAL 
      || eType==SQLITE_OPEN_MAIN_JOURNAL 
@@ -5684,23 +6083,24 @@ static int unixOpen(
   /* If argument zPath is a NULL pointer, this function is required to open
   ** a temporary file. Use this buffer to store the file name in.
   */
-  //如果变量zPath是一个空指针，这个方法被要求去打开一个临时文件。使用这个缓冲区存储文件名。
   char zTmpname[MAX_PATHNAME+2];
   const char *zName = zPath;
 
   /* Check the following statements are true: 
-  //检查一下句子为真
   **
   **   (a) Exactly one of the READWRITE and READONLY flags must be set, and 
   **   (b) if CREATE is set, then READWRITE must also be set, and
   **   (c) if EXCLUSIVE is set, then CREATE must also be set.
   **   (d) if DELETEONCLOSE is set, then CREATE must also be set.
+  **
+  ** 检查以下语句是否为真：
+  **
+  **（a）必须设置READWRITE和READONLY标志中的一个
+  **（b）如果设置了CREATE，则还必须设置READWRITE
+  **（c）如果设置了EXCLUSIVE，那么还必须设置CREATE。
+  **（d）如果设置了DELETEONCLOSE，那么还必须设置CREATE。
+  **
   */
-  //   (a)事实上一个READWRITE和READONLY标记必须被设置，
-  //   (b)如果CREATE被设置，则READWRITE也必须被设置，
-  //   (c)如果EXCLUSIVE被设置，则CREATE也必须被设置，
-  //   (d)如果DELETEONCLOSE被设置，则CREATE也必须被设置，
-
   assert((isReadonly==0 || isReadWrite==0) && (isReadWrite || isReadonly));
   assert(isCreate==0 || isReadWrite);
   assert(isExclusive==0 || isCreate);
@@ -5708,14 +6108,12 @@ static int unixOpen(
 
   /* The main DB, main journal, WAL file and master journal are never 
   ** automatically deleted. Nor are they ever temporary files.  */
-  //主DB，主日志，WAL文件和主日志永远不会自动删除。临时文件也不会。
   assert( (!isDelete && zName) || eType!=SQLITE_OPEN_MAIN_DB );
   assert( (!isDelete && zName) || eType!=SQLITE_OPEN_MAIN_JOURNAL );
   assert( (!isDelete && zName) || eType!=SQLITE_OPEN_MASTER_JOURNAL );
   assert( (!isDelete && zName) || eType!=SQLITE_OPEN_WAL );
 
   /* Assert that the upper layer has set one of the "file-type" flags. */
-  //断言上层被设置一个"file-type"标记。
   assert( eType==SQLITE_OPEN_MAIN_DB      || eType==SQLITE_OPEN_TEMP_DB 
        || eType==SQLITE_OPEN_MAIN_JOURNAL || eType==SQLITE_OPEN_TEMP_JOURNAL 
        || eType==SQLITE_OPEN_SUBJOURNAL   || eType==SQLITE_OPEN_MASTER_JOURNAL 
@@ -5740,12 +6138,10 @@ static int unixOpen(
     /* Database filenames are double-zero terminated if they are not
     ** URIs with parameters.  Hence, they can always be passed into
     ** sqlite3_uri_parameter(). */
-    //数据库文件名会双零终止如果它们没有URIs参数。因此，它们总可以传入sqlite3_uri_parameter()。
     assert( (flags & SQLITE_OPEN_URI) || zName[strlen(zName)+1]==0 );
 
   }else if( !zName ){
     /* If zName is NULL, the upper layer is requesting a temp file. */
-    //如果zName为空，则上层被要求一个临时文件。
     assert(isDelete && !syncDir);
     rc = unixGetTempname(MAX_PATHNAME+2, zTmpname);
     if( rc!=SQLITE_OK ){
@@ -5755,16 +6151,18 @@ static int unixOpen(
 
     /* Generated temporary filenames are always double-zero terminated
     ** for use by sqlite3_uri_parameter(). */
-    //使用sqlite3_uri_parameter()产生的临时文件总是双零终止。
     assert( zName[strlen(zName)+1]==0 );
   }
 
   /* Determine the value of the flags parameter passed to POSIX function
   ** open(). These must be calculated even if open() is not called, as
   ** they may be stored as part of the file handle and used by the 
-  ** 'conch file' locking functions later on.  */
-  //查明标记参数传入POSIX方法open()的标记值。这必须被计算即使open()没有被调用，如同他们可能被存储为文件句柄的一部分
-  //并且被用作后来的壳文件锁定方法。
+  ** 'conch file' locking functions later on.  
+  **
+  ** 确定传递给POSIX函数open()参数flags的值。 这些必须计算，
+  ** 即使open()没有被调用，因为它们可能被存储为文件句柄的一部分，
+  ** 并由“conch文件”锁定功能以后使用。
+  */
   if( isReadonly )  openFlags |= O_RDONLY;
   if( isReadWrite ) openFlags |= O_RDWR;
   if( isCreate )    openFlags |= O_CREAT;
@@ -5772,9 +6170,9 @@ static int unixOpen(
   openFlags |= (O_LARGEFILE|O_BINARY);
 
   if( fd<0 ){
-    mode_t openMode;              /* Permissions to create file with */ //创建文件的权限
-    uid_t uid;                    /* Userid for the file */ //文件的用户id
-    gid_t gid;                    /* Groupid for the file */ //文件的组id
+    mode_t openMode;              /* Permissions to create file with */
+    uid_t uid;                    /* Userid for the file */
+    gid_t gid;                    /* Groupid for the file */
     rc = findCreateFileMode(zName, flags, &openMode, &uid, &gid);
     if( rc!=SQLITE_OK ){
       assert( !p->pUnused );
@@ -5785,7 +6183,6 @@ static int unixOpen(
     OSTRACE(("OPENX   %-3d %s 0%o\n", fd, zName, openFlags));
     if( fd<0 && errno!=EISDIR && isReadWrite && !isExclusive ){
       /* Failed to open the file for read/write access. Try read-only. */
-      //打开文件去读／写存取失败。尝试只读。
       flags &= ~(SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE);
       openFlags &= ~(O_RDWR|O_CREAT);
       flags |= SQLITE_OPEN_READONLY;
@@ -5802,7 +6199,6 @@ static int unixOpen(
     ** journal or WAL file, set the ownership of the journal or WAL to be
     ** the same as the original database.
     */
-    //如果这个进程被当作启动运行，并且如果创建一个新的或调日志或WAL文件，设置日志或者WAL的所有权作为和原数据库相同的。
     if( flags & (SQLITE_OPEN_WAL|SQLITE_OPEN_MAIN_JOURNAL) ){
       osFchown(fd, uid, gid);
     }
@@ -5845,7 +6241,6 @@ static int unixOpen(
 #endif
 
   /* Set up appropriate ctrlFlags */
-  //设置合适的ctrlFlags
   if( isDelete )                ctrlFlags |= UNIXFILE_DELETE;
   if( isReadonly )              ctrlFlags |= UNIXFILE_RDONLY;
   if( noLock )                  ctrlFlags |= UNIXFILE_NOLOCK;
@@ -5862,7 +6257,6 @@ static int unixOpen(
 
     /* SQLITE_FORCE_PROXY_LOCKING==1 means force always use proxy, 0 means 
     ** never use proxy, NULL means use proxy for non-local files only.  */
-    //SQLITE_FORCE_PROXY_LOCKING==1意味着总是强制使用代理，0意味着从不使用代理，NULL只意味着以未定为文件使用代理
     if( envforce!=NULL ){
       useProxy = atoi(envforce)>0;
     }else{
@@ -5873,7 +6267,13 @@ static int unixOpen(
         ** then the call to close() will cancel those locks. In practice,
         ** we're assuming that statfs() doesn't fail very often. At least
         ** not while other file descriptors opened by the same process on
-        ** the same file are working.  */
+        ** the same file are working.  
+        ** 理论上，close（fd）调用是次优的。如果使用fd打开的是数据库文件，
+        ** 并且在该打开文件上其他连接持有咨询锁，则调用close()取消这些锁。
+        ** 在实践中，我们假设statfs()不会经常失败。至少不会是同一文件上的
+        ** 同一进程打开的其他文件描述符时失败.
+        ** 
+        */
         p->lastErrno = errno;
         robust_close(p, fd, __LINE__);
         rc = SQLITE_IOERR_ACCESS;
@@ -5890,8 +6290,6 @@ static int unixOpen(
           ** and clear all the structure's references.  Specifically, 
           ** pFile->pMethods will be NULL so sqlite3OsClose will be a no-op 
           */
-          //使用unixClose清理添加进fillInUnixFile的资源而且清理所有的结构参照。特别地，
-          //pFile->pMethods将被制为NULL，所以sqlite3OsClose将被误操作。
           unixClose(pFile);
           return rc;
         }
@@ -5915,7 +6313,6 @@ open_finished:
 ** Delete the file at zPath. If the dirSync argument is true, fsync()
 ** the directory after deleting the file.
 */
-//在zPath删除文件。如果dirSync参数为真，删除此文件后fsync()这个目录。
 static int unixDelete(
   sqlite3_vfs *NotUsed,     /* VFS containing this as the xDelete method */
   const char *zPath,        /* Name of file to be deleted */
@@ -5953,19 +6350,17 @@ static int unixDelete(
 ** Test the existance of or access permissions of file zPath. The
 ** test performed depends on the value of flags:
 **
-//测试存取文件zPath权限的存在性。测试的表现以标记值为依据。
-**     SQLITE_ACCESS_EXISTS: Return 1 if the file exists//SQLITE_ACCESS_EXISTS:返回1如果文件存在
-**     SQLITE_ACCESS_READWRITE: Return 1 if the file is read and writable.//SQLITE_ACCESS_READWRITE:返回1如果文件被读取且可写。
-**     SQLITE_ACCESS_READONLY: Return 1 if the file is readable.//SQLITE_ACCESS_READONLY:返回1如果文件可读。
+**     SQLITE_ACCESS_EXISTS: Return 1 if the file exists
+**     SQLITE_ACCESS_READWRITE: Return 1 if the file is read and writable.
+**     SQLITE_ACCESS_READONLY: Return 1 if the file is readable.
 **
 ** Otherwise return 0.
-//否则返回0.
 */
 static int unixAccess(
-  sqlite3_vfs *NotUsed,   /* The VFS containing this xAccess method *///VFS包含xAccess方法
-  const char *zPath,      /* Path of the file to examine *///要检查文件的路径
-  int flags,              /* What do we want to learn about the zPath file? *///我们将从zPath文件得到什么？
-  int *pResOut            /* Write result boolean here *///自这里写布尔结果
+  sqlite3_vfs *NotUsed,   /* The VFS containing this xAccess method */
+  const char *zPath,      /* Path of the file to examine */
+  int flags,              /* What do we want to learn about the zPath file? */
+  int *pResOut            /* Write result boolean here */
 ){
   int amode = 0;
   UNUSED_PARAMETER(NotUsed);
@@ -6000,18 +6395,21 @@ static int unixAccess(
 ** is stored as a nul-terminated string in the buffer pointed to by
 ** zPath. 
 **
-//将一个相对路径转换为绝对路径。这个相对路径在zPath指向的缓冲区内被存储为nul-terminated字符串。
 ** zOut points to a buffer of at least sqlite3_vfs.mxPathname bytes 
 ** (in this case, MAX_PATHNAME bytes). The full-path is written to
 ** this buffer before returning.
+**
+** 将相对路径名转换为完整路径名。 相对路径作为一个nul终止字符串
+** 存储在zPath指向的缓冲区中。
+** zOut指向至少为sqlite3_vfs.mxPathname字节（在本例中为MAX_PATHNAME个字节）的缓冲区。 
+** 在返回之前，全路径被写入此缓冲区。
+**
 */
-//zOut指向的缓冲区至少有sqlite3_vfs.mxPathname字节(在这种情况下，为MAX_PATHNAME字节数)。
-//返回前绝对路径被写到缓冲区。
 static int unixFullPathname(
-  sqlite3_vfs *pVfs,            /* Pointer to vfs object */ //指向vfs对象的指针
-  const char *zPath,            /* Possibly relative input path */ //可能的输入相对路径
-  int nOut,                     /* Size of output buffer in bytes */  //输出缓冲区的自己数
-  char *zOut                    /* Output buffer */  //输出缓冲区
+  sqlite3_vfs *pVfs,            /* Pointer to vfs object */
+  const char *zPath,            /* Possibly relative input path */
+  int nOut,                     /* Size of output buffer in bytes */
+  char *zOut                    /* Output buffer */
 ){
 
   /* It's odd to simulate an io-error here, but really this is just
@@ -6019,8 +6417,6 @@ static int unixFullPathname(
   ** function failing. This function could fail if, for example, the
   ** current working directory has been unlinked.
   */
-  //在这模拟io错误看似很奇怪，但是实际上只是使用io错误基础架构来测试SQLite持有这个函数是否失败。这个函数有可能失败
-  //例如，当前工作目录被断开连接。
   SimulateIOError( return SQLITE_ERROR );
 
   assert( pVfs->mxPathname==MAX_PATHNAME );
@@ -6045,8 +6441,10 @@ static int unixFullPathname(
 /*
 ** Interfaces for opening a shared library, finding entry points
 ** within the shared library, and closing the shared library.
+** 
+** 用于打开共享库，在共享库中查找入口点以及关闭共享库的接口。
+**
 */
-//打开共享库的接口，寻找共享库的入口点，并且关闭共享库。
 #include <dlfcn.h>
 static void *unixDlOpen(sqlite3_vfs *NotUsed, const char *zFilename){
   UNUSED_PARAMETER(NotUsed);
@@ -6059,9 +6457,11 @@ static void *unixDlOpen(sqlite3_vfs *NotUsed, const char *zFilename){
 ** message is available, it is written to zBufOut. If no error message
 ** is available, zBufOut is left unmodified and SQLite uses a default
 ** error message.
+**
+** SQLite在调用unixDlSym()或unixDlOpen()失败（返回一个空指针）后立即调用此函数。
+** 如果有更详细的错误消息可用，将它写入zBufOut。 如果没有可用的错误消息，
+** zBufOut保持不变，SQLite使用默认错误消息。
 */
-//SQLite在unixDlSym()或unixDlOpen()函数失败时立即调用这个函数(返回空指针)。
-//如果更多错误细节信息可用，它将被写到zBufOut。如果没有错误信息可用，zBufOut被留下不修改并且SQLite使用一个默认的错误信息。
 static void unixDlError(sqlite3_vfs *NotUsed, int nBuf, char *zBufOut){
   const char *zErr;
   UNUSED_PARAMETER(NotUsed);
@@ -6079,23 +6479,29 @@ static void (*unixDlSym(sqlite3_vfs *NotUsed, void *p, const char*zSym))(void){
   ** returns a void* which is really a pointer to a function.  So how do we
   ** use dlsym() with -pedantic-errors?
   **
-  //有-pedantic-errors的GCC表示C90不允许一个void*被分配到一个指向函数的指针。
-  //即使库dlsym()例程返回一个真正指向函数的void*。所以伴随-pedantic-errors怎样使用dlsym()？
   ** Variable x below is defined to be a pointer to a function taking
   ** parameters void* and const char* and returning a pointer to a function.
   ** We initialize x by assigning it a pointer to the dlsym() function.
   ** (That assignment requires a cast.)  Then we call the function that
   ** x points to.  
   **
-  //一下变量x被定义成一个指针指向一个持有void*参数和const char*参数并返回指向函数的指针的函数。
-  //我们通过分配指向dlsym()函数的指针初始化x(这个任务被要求一个分配)。接着我们调用x指向的函数。
   ** This work-around is unlikely to work correctly on any system where
   ** you really cannot cast a function pointer into void*.  But then, on the
   ** other hand, dlsym() will not work on such a system either, so we have
   ** not really lost anything.
+  **
+  ** GCC with -pedantic-errors指明C90不允许将void *转换为指向函数的指针。
+  ** 然而库dlsym()例程返回一个void *，这实际上是一个指向一个函数的指针。
+  ** 那么我们如何使用dlsym()和-pedantic-errors呢?
+  **
+  ** 下面的变量x被定义为一个指向一个函数的指针，该函数接受参数void *和const char *
+  ** 并返回一个指向函数的指针。 我们通过为dlsym()函数分配一个指针来初始化x。 
+  **（这个赋值需要一个转换。）然后我们调用x指向的函数。
+  **
+  ** 这种解决方法不可能在任何系统上正确工作，你确实不能将函数指针转换为void*。 
+  ** 但在另一方面，dlsym()也不会在这样的系统上工作，所以我们实际上没有失去任何东西。
+  **
   */
-  //这个work-around不太可能正确的工作在任何你不能分配给void*的函数指针的系统。
-  //但是，另一方面看，dlsym()也不会工作在这样一个系统上，所以我们不会损失什么东西。
   void (*(*x)(void*,const char*))(void);
   UNUSED_PARAMETER(NotUsed);
   x = (void(*(*)(void*,const char*))(void))dlsym;
@@ -6105,7 +6511,7 @@ static void unixDlClose(sqlite3_vfs *NotUsed, void *pHandle){
   UNUSED_PARAMETER(NotUsed);
   dlclose(pHandle);
 }
-#else /* if SQLITE_OMIT_LOAD_EXTENSION is defined: */ //如果SQLITE_OMIT_LOAD_EXTENSION被定义
+#else /* if SQLITE_OMIT_LOAD_EXTENSION is defined: */
   #define unixDlOpen  0
   #define unixDlError 0
   #define unixDlSym   0
@@ -6115,7 +6521,6 @@ static void unixDlClose(sqlite3_vfs *NotUsed, void *pHandle){
 /*
 ** Write nBuf bytes of random data to the supplied buffer zBuf.
 */
-//将nBuf字节的随机数据写入被支持的zBuf缓冲。
 static int unixRandomness(sqlite3_vfs *NotUsed, int nBuf, char *zBuf){
   UNUSED_PARAMETER(NotUsed);
   assert((size_t)nBuf>=(sizeof(time_t)+sizeof(int)));
@@ -6128,14 +6533,10 @@ static int unixRandomness(sqlite3_vfs *NotUsed, int nBuf, char *zBuf){
   ** the whole array and silence valgrind, even if that means less randomness
   ** in the random seed.
   **
-  // 我们必须初始化zBuf以阻止错误报告中的valgrind。这个通过valgrind报告的问题不正确－
-  //我们更倾向于使用通过未被初始化空间的zBuf增长随机性－但是valgrind错误趋向于打扰一些用户。
-  //更多的争议，它貌似更容易初始化所有数组和寂静valgrind，甚至在随机种中更少的随机性。
   ** When testing, initializing zBuf[] to zero is all we do.  That means
   ** that we always use the same random number sequence.  This makes the
   ** tests repeatable.
   */
-  //当测试，我们所有做的事初始化zBuf[]为零。那意味着我们总是使用相同的随机数队列。这样使测试可重复。
   memset(zBuf, 0, nBuf);
 #if !defined(SQLITE_TEST)
   {
@@ -6166,9 +6567,11 @@ static int unixRandomness(sqlite3_vfs *NotUsed, int nBuf, char *zBuf){
 ** requested from the underlying operating system, a number which
 ** might be greater than or equal to the argument, but not less
 ** than the argument.
+**
+** 休眠一段时间。 返回休眠的时间量。 参数是我们想要休眠的微秒数。 
+** 返回值是从底层操作系统实际请求的休眠的微秒数，该数字可能大于
+** 或等于参数，但不小于参数。
 */
-//休眠一会儿。返回睡眠时间。这个我们想去休眠的参数是以微秒计算。返回值是从底层操作系统请求的微秒数。
-//这个数值可能大于或等于这个参数，但是不会小于此参数。
 static int unixSleep(sqlite3_vfs *NotUsed, int microseconds){
 #if OS_VXWORKS
   struct timespec sp;
@@ -6195,10 +6598,8 @@ static int unixSleep(sqlite3_vfs *NotUsed, int microseconds){
 ** the number of seconds since 1970 and is used to set the result of
 ** sqlite3OsCurrentTime() during testing.
 */
-//以下变量，如果被设置为非零值，则被解释为自从1970年后的秒数，并且被设置为测试过程中sqlite3OsCurrentTime()的结果。
 #ifdef SQLITE_TEST
 int sqlite3_current_time = 0;  /* Fake system time in seconds since 1970. */
-                              //假系统时间，从1970年至今的秒数算起
 #endif
 
 /*
@@ -6208,10 +6609,15 @@ int sqlite3_current_time = 0;  /* Fake system time in seconds since 1970. */
 ** epoch of noon in Greenwich on November 24, 4714 B.C according to the
 ** proleptic Gregorian calendar.
 **
-//查询当前时间(在通用坐标系时间)。写入*piNow当前时间和日期作为一个Julian Day次数86_400_000。
 ** On success, return SQLITE_OK.  Return SQLITE_ERROR if the time and date 
 ** cannot be found.
-*///如果成功，返回SQLITE_OK。如果时间和日期不能被找到则返回SQLITE_ERROR。
+**
+** 查找当前时间（在协调时间内）。 写入* piNow当前时间和日期为朱利安日数
+** 乘以86_400_000。 换句话说，写入* piNow自从中午的朱利安时代以来的毫秒数，
+** 格林威治在4714年11月24日，根据proleptic格里历。
+**
+** 成功后，返回SQLITE_OK。 如果无法找到时间和日期，则返回SQLITE_ERROR。
+*/
 static int unixCurrentTimeInt64(sqlite3_vfs *NotUsed, sqlite3_int64 *piNow){
   static const sqlite3_int64 unixEpoch = 24405875*(sqlite3_int64)8640000;
   int rc = SQLITE_OK;
@@ -6246,8 +6652,6 @@ static int unixCurrentTimeInt64(sqlite3_vfs *NotUsed, sqlite3_int64 *piNow){
 ** current time and date as a Julian Day number into *prNow and
 ** return 0.  Return 1 if the time and date cannot be found.
 */
-//查找当前时间（世界标准时间）。
-//写当前的时间和日期作为儒略日数为* prNow并返回0返回1，如果时间和日期不能被发现。
 static int unixCurrentTime(sqlite3_vfs *NotUsed, double *prNow){
   sqlite3_int64 i = 0;
   int rc;
@@ -6263,10 +6667,12 @@ static int unixCurrentTime(sqlite3_vfs *NotUsed, double *prNow){
 ** during SQLite operation.  But so far, none of that has been implemented
 ** in the core.  So this routine is never called.  For now, it is merely
 ** a place-holder.
+**
+** 我们添加了xGetLastError（）方法，目的是在SQLite操作出现操作系统问题时
+** 提供更好的低级错误消息。 但到目前为止，这些都没有在核心实施。 
+** 所以这个例程不会被调用。 现在只是一个占位符。
+**
 */
-//我们与提供更好的低级错误信息的打算加入xGetLastError（）方法时，运行系统的问题上来
-//在SQLite的操作。但到目前为止，没有任何已经在内核中实现。因此，这个程序不会被调用。就目前而言，它仅仅是一个占位符。
-在SQLite的操作。但到目前为止，没有任何已经在内核中实现。因此，这个程序不会被调用。就目前而言，它仅仅是一个占位符。
 static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
   UNUSED_PARAMETER(NotUsed);
   UNUSED_PARAMETER(NotUsed2);
@@ -6290,9 +6696,11 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 ** been defined - so that the primitive locking methods are available
 ** as services to help with the implementation of proxy locking.
 **
-//代理锁在这个场景下是一个"超级锁定方法"：它使用辅助锁定装置的文件的其他锁定的方法。
-//代理锁定是一种元层上方以上实施原始锁定的顶部。出于这个原因，
-//实现代理锁定的分工推迟到年底文件（这里）后，所有的其他I/O的方法已被定义 - 使原始锁定方法都可以作为服务来帮助实施代理锁定。
+** 在某种意义上，代理锁是一种“uber锁定方法”：它对辅助锁文件
+** 使用其他锁定方法。 代理锁定是在上面实现的原语锁定之上的元层。 
+** 因此，在所有其他I / O方法被定义之后，实现代理锁定的分割被推迟到
+** 后面（这里） - 以使得原语锁定方法可用作服务实现代理锁定。
+**
 ****
 **
 ** The default locking schemes in SQLite use byte-range locks on the
@@ -6306,10 +6714,13 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 ** address in the shared range is taken for a SHARED lock, the entire
 ** shared range is taken for an EXCLUSIVE lock):
 **
-//默认锁定在SQLite的使用字节范围锁方案对数据库文件进行协调多个读者和作者[http://sqlite.org/lockingv3.html]安全，并发访问。
-//这五个文件锁定状态（UNLOCKED，待共享，保留，EXCLUSIVE）实现为POSIX读及以上组固定的位置（通过FSCTL）写锁，
-//对AFP和SMB独享的字节范围锁通过FSCTL与_IOWR（'Z'可23，结构ByteRangeLockPB2）来跟踪同一5个州。为了模拟在共享范围F_RDLCK，
-//对AFP在共享范围内随机选择的地址是一个共享锁，整个共享范围采取的排它锁):
+** SQLite中的默认锁定方案使用数据库文件上的字节范围锁定来协调安全的，
+** 由多个读取器和写入器的并发访问[http://sqlite.org/lockingv3.html]。 五个文件锁定状态
+**（UNLOCKED，PENDING，SHARED，RESERVED，EXCLUSIVE）被实现为固定位置集合上的POSIX
+** 读写锁定（通过fsctl），在AFP和SMB上，只有专用的字节范围锁定通过fsctl和_IOWR 
+**（'z'，23，struct ByteRangeLockPB2）来跟踪相同的5个状态。 为了在共享范围上模拟F_RDLCK，
+** 在AFP上，共享范围中随机选择的地址用于SHARED锁，整个共享范围用于EXCLUSIVE锁）：
+**
 **      PENDING_BYTE        0x40000000
 **      RESERVED_BYTE       0x40000001
 **      SHARED_RANGE        0x40000002 -> 0x40000200
@@ -6325,18 +6736,25 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 ** readers and writers
 ** [http://www.nabble.com/SQLite-on-NFS-cache-coherency-td15655701.html].
 **
-//这可以很好的本地文件系统上，但显示了近100倍放缓对AFP读取性能，因为AFP客户端禁用读取高速缓存，当字节范围锁都存在。
-//使读高速缓存公开一个高速缓存一致性问题，即存在于所有OS X上支持的网络文件系统。
-//NFS和AFP均遵守贴近开放语义确保高速缓存一致性[http://nfs.sourceforge.net/#faq_a8]，
-//这并不能有效地解决了多个读者和作家的并发访问数据库的要求[HTTP：//www.nabble.com/SQLite-on-NFS-cache-coherency-td15655701.html。
 ** To address the performance and cache coherency issues, proxy file locking
 ** changes the way database access is controlled by limiting access to a
 ** single host at a time and moving file locks off of the database file
 ** and onto a proxy file on the local file system.  
 **
-//为了解决性能和高速缓存一致性的问题，
-//代理文件锁定改变的方式访问数据库是通过限制访问一台主机的时间和移动文件锁关闭的数据库文件，
-//并到本地文件系统上的代理文件控制。
+** PENDING_BYTE 0x40000000
+** RESERVED_BYTE 0x40000001
+** SHARED_RANGE 0x40000002 - > 0x40000200
+**
+** 这在本地文件系统上工作效果很好，但是在AFP上的读取性能下降了近100倍，
+** 因为AFP客户端在存在字节范围锁时禁用读取缓存。启用读取缓存会暴露所有
+** OS X支持的网络文件系统上存在的缓存一致性问题。 NFS和AFP都遵守接近开放的
+** 语义来确保缓存一致性[http://nfs.sourceforge.net/#faq_a8]，这没有有效地满足多个读取器
+** 和写入器并发数据库访问的要求[http： //www.nabble.com/SQLite-on-NFS-cache-coherency-td15655701.html]。
+**
+** 为了解决性能和缓存一致性问题，代理文件锁定改变了数据库访问的方式，
+** 通过限制对单个主机的访问以及将文件锁从数据库文件移动到本地文件系统上的
+** 代理文件。
+**
 **
 ** Using proxy locks
 ** -----------------
@@ -6360,16 +6778,38 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 ** actual proxy file name is generated from the name and path of the
 ** database file.  For example:
 **
-//指定“：自动”意味着，如果存在与它匹配的主机ID的壳文件，在壳文件的代理路径将被使用，
-//否则基于所述用户的临时目录（经由confstr代理路径（_CS_DARWIN_USER_TEMP_DIR,...））
-//将被用于与实际代理文件名从名称和数据库文件的路径中产生的。例如：
 **       For database path "/Users/me/foo.db" 
 **       The lock path will be "<tmpdir>/sqliteplocks/_Users_me_foo.db:auto:")
+**
+** 使用代理锁
+** -----------------
+**
+** C API
+**
+** sqlite3_file_control（db，dbname，SQLITE_SET_LOCKPROXYFILE，
+** <proxy_path> | “：auto：”）;
+** sqlite3_file_control（db，dbname，SQLITE_GET_LOCKPROXYFILE，＆<proxy_path>）;
+**
+**
+** SQL编译指示
+**
+** PRAGMA [database。] lock_proxy_file = <proxy_path> | ：auto：
+** PRAGMA [database。] lock_proxy_file
+**
+** 指定“：auto：”意味着如果有一个具有匹配的主机ID的文件，则将使用conch文件
+** 中的代理路径，否则将使用基于用户的temp dir的代理路径（通过confstr（_CS_DARWIN_USER_TEMP_DIR ，...）），
+** 并且实际的代理文件名是从数据库文件的名称和路径生成的。 例如：
+**
+** 对于数据库路径“/Users/me/foo.db”
+** 锁定路径将为“<tmpdir> /sqliteplocks/_Users_me_foo.db:auto：”）
 **
 ** Once a lock proxy is configured for a database connection, it can not
 ** be removed, however it may be switched to a different proxy path via
 ** the above APIs (assuming the conch file is not being held by another
 ** connection or process). 
+**
+** 一旦锁代理被配置用于数据库连接，则它不能被移除，然而它可以经由上述API
+** 被切换到不同的代理路径（假设该conch文件没有被另一个连接或进程使用）。
 **
 **
 ** How proxy locking works
@@ -6396,18 +6836,28 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 ** is held by another process (with a shared lock), the exclusive lock
 ** will fail and SQLITE_BUSY is returned.
 **
-//壳文件 - 通过在壳文件以一个SQLite式共享锁，阅读内容和比较主机的唯一的主机ID（见下文），
-//并锁定代理路径对使用代理文件，sqlite的必须先“持有壳”存储在壳的值。
-//壳文件存储在同一目录下的数据库文件和数据库文件名后的文件名进行构图。“<数据库>-壳”。
-//如果壳文件不存在，或者它的内容不匹配的主机ID和/或代理的路径，那么锁升级为独占锁，壳文件内容与主机ID和代理路径更新和锁再次降级为共享锁。
-//如果壳被另一个进程举行（与共享锁），排它锁将失败，SQLITE_BUSY返回。
+** 代理锁定的工作原理
+** -----------------------
+**
+** 代理文件锁定主要依赖于两个新的支持文件：
+**
+** * conch文件，以限制对单个主机的数据库文件的访问
+**
+** * 代理文件用作通常在数据库上执行的咨询锁的代理
+**
+** conch文件 -要使用代理文件，sqlite必须首先通过对conch文件采取sqlite共享锁来保持conch，
+** 读取内容并比较主机的唯一主机ID（请参见下文）和锁代理路径对存储的conch文件值。
+** conch文件存储在与数据库文件相同的目录中，并且在数据库文件名后面的文件名被
+** 图案化为“<databasename> -conch”。如果conch文件不存在，或者其内容与主机ID和/或代理
+** 路径不匹配，则锁升级为独占锁，并且conch文件内容用主机ID和代理路径更新，并且锁是
+** 降级到共享锁。如果conch文件由另一个进程（具有共享锁）持有，则排它锁将失败，
+** 并返回SQLITE_BUSY。
+**
 ** The proxy file - a single-byte file used for all advisory file locks
 ** normally taken on the database file.   This allows for safe sharing
 ** of the database file for multiple readers and writers on the same
 ** host (the conch ensures that they all use the same local lock file).
 **
-//代理文件 - 用于所有的咨询文件锁定一个单字节的文件，通常采取数据库文件。
-//这使得安全共享多个读者和作家在同一台主机上的数据库文件（壳确保它们都使用相同的本地锁定文件）。
 ** Requesting the lock proxy does not immediately take the conch, it is
 ** only taken when the first request to lock database file is made.  
 ** This matches the semantics of the traditional locking behavior, where
@@ -6415,12 +6865,18 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 ** The shared lock and an open file descriptor are maintained until 
 ** the connection to the database is closed. 
 **
-//请求锁代理不立即采取海螺，它仅取当第一请求锁定数据库文件被制成。
-//这与传统的锁定行为，在打开的数据库文件的连接不上采取锁的语义。
-//共享锁和一个打开的文件描述符被保持到数据库连接被关闭。
 ** The proxy file and the lock file are never deleted so they only need
 ** to be created the first time they are used.
-//代理文件和锁定文件不会被删除，这样他们只需要创建首次使用它们。
+**
+** 代理文件 - 用于通常在数据库文件上采用的所有建议文件锁的单字节文件。 
+** 这允许在同一主机上的多个读取器和写入器的数据库文件的安全共享
+**（该conch确保它们都使用相同的本地锁文件）。
+**
+** 请求锁代理不立即采取海螺，它只有在第一次请求锁定数据库文件时才采取。 
+** 这匹配传统锁定行为的语义，其中打开与数据库文件的连接不会对其进行锁定。 
+** 将保持共享锁和打开的文件描述符，直到与数据库的连接关闭。
+**
+** 代理文件和锁定文件从不删除，因此只需要在首次使用它们时创建它们。
 **
 ** Configuration options
 ** ---------------------
@@ -6447,6 +6903,26 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 **       Permissions to use when creating a directory for storing the
 **       lock proxy files, only used when LOCKPROXYDIR is not set.
 **    
+** 配置选项
+** ---------------------
+**
+** SQLITE_PREFER_PROXY_LOCKING
+**
+** 在非本地文件系统上访问的数据库文件会自动配置为代理锁定，
+** 锁定文件将使用相同的逻辑自动命名
+** 				PRAGMA lock_proxy_file =“：auto：”
+**
+** SQLITE_PROXY_DEBUG
+**
+** 在主机ID文件检索和创建期间启用错误消息的日志记录
+**
+** LOCKPROXYDIR
+**
+** 覆盖用于通过“：auto：”设置自动命名的锁定代理文件的默认目录
+**
+** SQLITE_DEFAULT_PROXYDIR_PERMISSIONS
+**
+** 创建用于存储锁定代理文件的目录时使用的权限，仅在未设置LOCKPROXYDIR时使用。
 **    
 ** As mentioned above, when compiled with SQLITE_PREFER_PROXY_LOCKING,
 ** setting the environment variable SQLITE_FORCE_PROXY_LOCKING to 1 will
@@ -6454,42 +6930,47 @@ static int unixGetLastError(sqlite3_vfs *NotUsed, int NotUsed2, char *NotUsed3){
 ** will force automatic proxy locking to be disabled for all database
 ** files (explicity calling the SQLITE_SET_LOCKPROXYFILE pragma or
 ** sqlite_file_control API is not affected by SQLITE_FORCE_PROXY_LOCKING).
+** 
+** 如上所述，当使用SQLITE_PREFER_PROXY_LOCKING编译时，将环境变量SQLITE_FORCE_PROXY_LOCKING
+** 设置为1将强制代理锁定用于每个打开的数据库文件，0将强制为所有数据库文件
+** 禁用自动代理锁定（显式调用SQLITE_SET_LOCKPROXYFILE伪指令或 sqlite_file_control API不受
+** SQLITE_FORCE_PROXY_LOCKING影响）。
+**
 */
-//如上所述，当与SQLITE_PREFER_PROXY_LOCKING编译，环境变量SQLITE_FORCE_PROXY_LOCKING设置为1，
-//将迫使锁定代理将用于每个数据库文件打开，0将迫使自动代理锁定所有数据库文件
-//（显式调用SQLITE_SET_LOCKPROXYFILE杂或禁用sqlite_file_control API不受SQLITE_FORCE_PROXY_LOCKING）。
 
 /*
-** Proxy locking is only available on MacOSX 
+** Proxy locking is only available on MacOSX 代理锁定仅在MacOSX上可用
 */
-//代理锁定只在MacOSX上可用
 #if defined(__APPLE__) && SQLITE_ENABLE_LOCKING_STYLE
 
 /*
 ** The proxyLockingContext has the path and file structures for the remote 
 ** and local proxy files in it
+**
+** proxyLockingContext具有远程和本地代理文件两种路径和文件结构
+**
 */
-//为了将远程和本地代理文件纳入其中，proxyLockingContext有路径和文件结构
 typedef struct proxyLockingContext proxyLockingContext;
 struct proxyLockingContext {
-  unixFile *conchFile;         /* Open conch file */ //打开壳文件
-  char *conchFilePath;         /* Name of the conch file */ //壳文件名
-  unixFile *lockProxy;         /* Open proxy lock file */  //打来代理锁文件
-  char *lockProxyPath;         /* Name of the proxy lock file */ //代理锁文件名
-  char *dbPath;                /* Name of the open file */  //打开文件名
-  int conchHeld;               /* 1 if the conch is held, -1 if lockless */ //1如果壳文件被持有，－1如果无限锁
+  unixFile *conchFile;         /* Open conch file */
+  char *conchFilePath;         /* Name of the conch file */
+  unixFile *lockProxy;         /* Open proxy lock file */
+  char *lockProxyPath;         /* Name of the proxy lock file */
+  char *dbPath;                /* Name of the open file */
+  int conchHeld;               /* 1 if the conch is held, -1 if lockless */
   void *oldLockingContext;     /* Original lockingcontext to restore on close */
-                               //在关闭时原始锁定上下文修复
   sqlite3_io_methods const *pOldMethod;     /* Original I/O methods for close */
-                                            //关闭时原始I/O方法
 };
 
 /* 
 ** The proxy lock file path for the database at dbPath is written into lPath, 
 ** which must point to valid, writable memory large enough for a maxLen length
 ** file path. 
+** 
+** dbPath处的数据库的代理锁文件路径写入lPath，该路径必须指向足够大的
+** maxLen长度文件路径的有效可写内存。
+**
 */
-//在dbPath数据库所属的代理锁文件路径被写入到lPath，它必须指向有效，可写入的足够大的内存为maxLen长度的文件路径
 static int proxyGetLockPath(const char *dbPath, char *lPath, size_t maxLen){
   int len;
   int dbLen;
@@ -6517,7 +6998,6 @@ static int proxyGetLockPath(const char *dbPath, char *lPath, size_t maxLen){
   }
   
   /* transform the db path to a unique cache name */
-  //将db路径转换为唯一的寄存器名称
   dbLen = (int)strlen(dbPath);
   for( i=0; i<dbLen && (i+len+7)<(int)maxLen; i++){
     char c = dbPath[i];
@@ -6532,7 +7012,6 @@ static int proxyGetLockPath(const char *dbPath, char *lPath, size_t maxLen){
 /* 
  ** Creates the lock file and any missing directories in lockPath
  */
- //创建锁文件和任何在lockPath中丢失的目录
 static int proxyCreateLockPath(const char *lockPath){
   int i, len;
   char buf[MAXPATHLEN];
@@ -6540,7 +7019,6 @@ static int proxyCreateLockPath(const char *lockPath){
   
   assert(lockPath!=NULL);
   /* try to create all the intermediate directories */
-  //尝试创建所有中间路径
   len = (int)strlen(lockPath);
   buf[0] = lockPath[0];
   for( i=1; i<len; i++ ){
@@ -6571,16 +7049,13 @@ static int proxyCreateLockPath(const char *lockPath){
 ** Create a new VFS file descriptor (stored in memory obtained from
 ** sqlite3_malloc) and open the file named "path" in the file descriptor.
 **
-//创建一个新的VFS文件描述符(存书在通过sqlite3_malloc获得的内存)，并且在文件描述符中打开名为"path"
 ** The caller is responsible not only for closing the file descriptor
 ** but also for freeing the memory associated with the file descriptor.
 */
-//调用器不仅想关闭文件描述符负责，而且负责释放此文件描述符的关联内存
 static int proxyCreateUnixFile(
-    const char *path,        /* path for the new unixFile *///新unixFile的路径
-    unixFile **ppFile,       /* unixFile created and returned by ref *///unixFile创建和返回通过ref
+    const char *path,        /* path for the new unixFile */
+    unixFile **ppFile,       /* unixFile created and returned by ref */
     int islockfile           /* if non zero missing dirs will be created */
-                            //如果非零丢失路径，则它将被创建
 ) {
   int fd = -1;
   unixFile *pNew;
@@ -6595,10 +7070,12 @@ static int proxyCreateUnixFile(
   ** the parent directories and then try again.
   ** 3. if that fails, try to open the file read-only
   ** otherwise return BUSY (if lock file) or CANTOPEN for the conch file
+  ** 
+  ** 1.首先尝试打开/创建文件
+  ** 2.如果失败，并且这是一个锁文件（非conch），请尝试创建父目录，然后重试。
+  ** 3.如果失败，尝试打开文件只读，否则返回BUSY（如果锁定文件）或CANTOPEN为conch文件
+  **
   */
-  //1.首先测试打开/创建次文件
-  //2.如果失败，并且它是一个锁文件(不是壳)，尝试创建父级目录然后重新尝试
-  //3.如果它失败了，尝试打开只读文件，在其他情况下返回BUSY(如果文件锁定)或者为了壳文件的CANTOPEN
   pUnused = findReusableFd(path, openFlags);
   if( pUnused ){
     fd = pUnused->fd;
@@ -6630,7 +7107,7 @@ static int proxyCreateUnixFile(
       case EACCES:
         return SQLITE_PERM;
       case EIO: 
-        return SQLITE_IOERR_LOCK; /* even though it is the conch *///虽然它是壳
+        return SQLITE_IOERR_LOCK; /* even though it is the conch */
       default:
         return SQLITE_CANTOPEN_BKPT;
     }
@@ -6664,27 +7141,24 @@ end_create_proxy:
 
 #ifdef SQLITE_TEST
 /* simulate multiple hosts by creating unique hostid file paths */
-//通过创建唯一的宿主id文件路径模拟多宿主
 int sqlite3_hostid_num = 0;
 #endif
 
-#define PROXY_HOSTIDLEN    16  /* conch file host id length *///壳文件宿主id长度
+#define PROXY_HOSTIDLEN    16  /* conch file host id length */
 
 /* Not always defined in the headers as it ought to be */
-//不总是在头文件中像它应该的那样定义
 extern int gethostuuid(uuid_t id, const struct timespec *wait);
 
 /* get the host ID via gethostuuid(), pHostID must point to PROXY_HOSTIDLEN 
 ** bytes of writable memory.
 */
-//通过gethostuuid()得到宿主ID，pHostID必须指向可写内存的PROXY_HOSTIDLEN字节
 static int proxyGetHostID(unsigned char *pHostID, int *pError){
   assert(PROXY_HOSTIDLEN == sizeof(uuid_t));
   memset(pHostID, 0, PROXY_HOSTIDLEN);
 #if defined(__MAX_OS_X_VERSION_MIN_REQUIRED)\
                && __MAC_OS_X_VERSION_MIN_REQUIRED<1050
   {
-    static const struct timespec timeout = {1, 0}; /* 1 sec timeout *///一秒延时
+    static const struct timespec timeout = {1, 0}; /* 1 sec timeout */
     if( gethostuuid(pHostID, &timeout) ){
       int err = errno;
       if( pError ){
@@ -6698,7 +7172,6 @@ static int proxyGetHostID(unsigned char *pHostID, int *pError){
 #endif
 #ifdef SQLITE_TEST
   /* simulate multiple hosts by creating unique hostid file paths */
-  //通过唯一的宿主id文件路径模拟多宿主
   if( sqlite3_hostid_num != 0){
     pHostID[0] = (char)(pHostID[0] + (char)(sqlite3_hostid_num & 0xFF));
   }
@@ -6709,9 +7182,8 @@ static int proxyGetHostID(unsigned char *pHostID, int *pError){
 
 /* The conch file contains the header, host id and lock file path
  */
-//壳文件包含头部，宿主id和锁文件路径
-#define PROXY_CONCHVERSION 2   /* 1-byte header, 16-byte host id, path *///一字节头，16字节宿主id，路径
-#define PROXY_HEADERLEN    1   /* conch file header length */ //壳文件头长度
+#define PROXY_CONCHVERSION 2   /* 1-byte header, 16-byte host id, path */
+#define PROXY_HEADERLEN    1   /* conch file header length */
 #define PROXY_PATHINDEX    (PROXY_HEADERLEN+PROXY_HOSTIDLEN)
 #define PROXY_MAXCONCHLEN  (PROXY_HEADERLEN+PROXY_HOSTIDLEN+MAXPATHLEN)
 
@@ -6720,8 +7192,11 @@ static int proxyGetHostID(unsigned char *pHostID, int *pError){
 ** it back.  The newly created file's file descriptor is assigned to the
 ** conch file structure and finally the original conch file descriptor is 
 ** closed.  Returns zero if successful.
-**需要一个打开的壳文件,将内容复制到一个新的路径,然后移回。新创建的文件的文件
-描述符被分配给壳文件结构体并，最后原始壳文件描述符关闭。如果成功返回0
+**
+** 获取打开的conch文件，将内容复制到新路径，然后将其移回。
+** 新创建的文件的文件描述符被分配给conch文件结构，最后关闭原始的
+** conch文件描述符。 如果成功，返回零。
+**
 */
 static int proxyBreakConchLock(unixFile *pFile, uuid_t myHostID){
   proxyLockingContext *pCtx = (proxyLockingContext *)pFile->lockingContext; 
@@ -6737,20 +7212,19 @@ static int proxyBreakConchLock(unixFile *pFile, uuid_t myHostID){
   UNUSED_PARAMETER(myHostID);
 
   /* create a new path by replace the trailing '-conch' with '-break' */
-  /*通过更换后缀 '-conch' 与 '-break'创建新的路径*/
   pathLen = strlcpy(tPath, cPath, MAXPATHLEN);
   if( pathLen>MAXPATHLEN || pathLen<6 || 
      (strlcpy(&tPath[pathLen-5], "break", 6) != 5) ){
     sqlite3_snprintf(sizeof(errmsg),errmsg,"path error (len %d)",(int)pathLen);
     goto end_breaklock;
   }
-  /* read the conch content */    //读取壳文件内容
+  /* read the conch content */
   readLen = osPread(conchFile->h, buf, PROXY_MAXCONCHLEN, 0);
   if( readLen<PROXY_PATHINDEX ){
     sqlite3_snprintf(sizeof(errmsg),errmsg,"read error (len %d)",(int)readLen);
     goto end_breaklock;
   }
-  /* write it out to the temporary break file */  //将他写出到临时中断文件
+  /* write it out to the temporary break file */
   fd = robust_open(tPath, (O_RDWR|O_CREAT|O_EXCL), 0);
   if( fd<0 ){
     sqlite3_snprintf(sizeof(errmsg), errmsg, "create failed (%d)", errno);
@@ -6783,7 +7257,6 @@ end_breaklock:
 
 /* Take the requested lock on the conch file and break a stale lock if the 
 ** host id matches.
-**给壳文件加上请求的锁，并打破旧的锁，如果主机ID匹配的话
 */
 static int proxyConchLock(unixFile *pFile, uuid_t myHostID, int lockType){
   proxyLockingContext *pCtx = (proxyLockingContext *)pFile->lockingContext; 
@@ -6802,10 +7275,10 @@ static int proxyConchLock(unixFile *pFile, uuid_t myHostID, int lockType){
        * 2nd try: fail if the mod time changed or host id is different, wait 
        *           10 sec and try again
        * 3rd try: break the lock unless the mod time has changed.
-     *如果锁定失败（忙）：
-     *第一次尝试：获得壳文件当前的时间，等待0.5秒，然后重试。
-     *第二次尝试：失败，如果当前时间改变或主机标识是不同，等待10秒，然后重试
-       *第三次尝试：打破锁，除非当前时间已经改变了。
+       * 如果锁定失败（忙）：
+       * 第一次尝试：获取conch的mod时间，等待0.5s，然后重试。
+       * 第二次尝试：失败如果mod时间改变或主机ID不同，等待10秒，然后重试
+       * 第三尝试：打破锁，除非mod时间已经改变。
        */
       struct stat buf;
       if( osFstat(conchFile->h, &buf) ){
@@ -6815,7 +7288,7 @@ static int proxyConchLock(unixFile *pFile, uuid_t myHostID, int lockType){
       
       if( nTries==1 ){
         conchModTime = buf.st_mtimespec;
-        usleep(500000); /* wait 0.5 sec and try the lock again*/   //等待5秒，然后重试
+        usleep(500000); /* wait 0.5 sec and try the lock again*/
         continue;  
       }
 
@@ -6833,15 +7306,15 @@ static int proxyConchLock(unixFile *pFile, uuid_t myHostID, int lockType){
           return SQLITE_IOERR_LOCK;
         }
         if( len>PROXY_PATHINDEX && tBuf[0]==(char)PROXY_CONCHVERSION){
-          /* don't break the lock if the host id doesn't match */ //如果主机表示不匹配不要打破锁
+          /* don't break the lock if the host id doesn't match */
           if( 0!=memcmp(&tBuf[PROXY_HEADERLEN], myHostID, PROXY_HOSTIDLEN) ){
             return SQLITE_BUSY;
           }
         }else{
-          /* don't break the lock on short read or a version mismatch */  //不要在短暂读取或版本不匹配时打破锁
+          /* don't break the lock on short read or a version mismatch */
           return SQLITE_BUSY;
         }
-        usleep(10000000); /* wait 10 sec and try the lock again */  //等待10秒，在尝试这个锁
+        usleep(10000000); /* wait 10 sec and try the lock again */
         continue; 
       }
       
@@ -6866,7 +7339,6 @@ static int proxyConchLock(unixFile *pFile, uuid_t myHostID, int lockType){
 ** lockPath means that the lockPath in the conch file will be used if the 
 ** host IDs match, or a new lock path will be generated automatically 
 ** and written to the conch file.
-**通过采用共享锁获得壳文件并读取其内容，如果lockPath非NULL，主机ID和锁定文件路径必须匹配。一个NULL lockPath意味着壳文件的**lockPath将被使用，如果主机ID相匹配，或者一个新的锁路径将自动生成并写入壳文件。
 */
 static int proxyTakeConch(unixFile *pFile){
   proxyLockingContext *pCtx = (proxyLockingContext *)pFile->lockingContext; 
@@ -6899,10 +7371,10 @@ static int proxyTakeConch(unixFile *pFile){
     if( rc!=SQLITE_OK ){
       goto end_takeconch;
     }
-    /* read the existing conch file */    //读取现有的壳文件
+    /* read the existing conch file */
     readLen = seekAndRead((unixFile*)conchFile, 0, readBuf, PROXY_MAXCONCHLEN);
     if( readLen<0 ){
-      /* I/O error: lastErrno set by seekAndRead */   // I/O 错误：seekAndRead设定的lastErrno
+      /* I/O error: lastErrno set by seekAndRead */
       pFile->lastErrno = conchFile->lastErrno;
       rc = SQLITE_IOERR_READ;
       goto end_takeconch;
@@ -6910,25 +7382,22 @@ static int proxyTakeConch(unixFile *pFile){
              readBuf[0]!=(char)PROXY_CONCHVERSION ){
       /* a short read or version format mismatch means we need to create a new 
       ** conch file. 
-    **短暂读取或者版本格式不匹配意味着我们需要建立一个新的壳文件
       */
       createConch = 1;
     }
     /* if the host id matches and the lock path already exists in the conch
     ** we'll try to use the path there, if we can't open that path, we'll 
     ** retry with a new auto-generated path 
-  **如果主机标识匹配，并且这个壳文件中已经存在加锁路径，我们就试着使用这个路径，如果我们打不开这个路径，就使用自动生成的路径  **重试
     */
-    do { /* in case we need to try again for an :auto: named lock file */ //以防我们需要再试一次:自动:命名的锁定文件
+    do { /* in case we need to try again for an :auto: named lock file */
 
       if( !createConch && !forceNewLockPath ){
         hostIdMatch = !memcmp(&readBuf[PROXY_HEADERLEN], myHostID, 
                                   PROXY_HOSTIDLEN);
-        /* if the conch has data compare the contents */    //如果壳文件有数据比较的内容
+        /* if the conch has data compare the contents */
         if( !pCtx->lockProxyPath ){
           /* for auto-named local lock file, just check the host ID and we'll
            ** use the local lock file path that's already in there
-       **对于自动命名的本地锁文件，只需检查主机ID，我们将使用已经在那里的本地锁定文件路径
            */
           if( hostIdMatch ){
             size_t pathLen = (readLen - PROXY_PATHINDEX);
@@ -6940,43 +7409,40 @@ static int proxyTakeConch(unixFile *pFile){
             lockPath[pathLen] = 0;
             tempLockPath = lockPath;
             tryOldLockPath = 1;
-            /* create a copy of the lock path if the conch is taken */  //创建锁路径的副本，如果获得了壳文件
+            /* create a copy of the lock path if the conch is taken */
             goto end_takeconch;
           }
         }else if( hostIdMatch
                && !strncmp(pCtx->lockProxyPath, &readBuf[PROXY_PATHINDEX],
                            readLen-PROXY_PATHINDEX)
         ){
-          /* conch host and lock path match */  //壳主机和锁路径匹配
+          /* conch host and lock path match */
           goto end_takeconch; 
         }
       }
       
-      /* if the conch isn't writable and doesn't match, we can't take it */   //如果壳不可写，不匹配，我们不能用它
+      /* if the conch isn't writable and doesn't match, we can't take it */
       if( (conchFile->openFlags&O_RDWR) == 0 ){
         rc = SQLITE_BUSY;
         goto end_takeconch;
       }
       
-      /* either the conch didn't match or we need to create a new one */  //不是壳文件不匹配，就是我们需要创建一个新的
+      /* either the conch didn't match or we need to create a new one */
       if( !pCtx->lockProxyPath ){
         proxyGetLockPath(pCtx->dbPath, lockPath, MAXPATHLEN);
         tempLockPath = lockPath;
-        /* create a copy of the lock path _only_ if the conch is taken */ //创建锁路径_only_的副本，如果使用这个壳文件
+        /* create a copy of the lock path _only_ if the conch is taken */
       }
       
       /* update conch with host and path (this will fail if other process
       ** has a shared lock already), if the host id matches, use the big
       ** stick.
-    ** 更新壳的主机和路径(如果其他进程已经共享锁这将会失败),如果主机id匹配,使用stick。
       */
       futimes(conchFile->h, NULL);
       if( hostIdMatch && !createConch ){
         if( conchFile->pInode && conchFile->pInode->nShared>1 ){
           /* We are trying for an exclusive lock but another thread in this
-           ** same process is still holding a shared lock.
-       **我们正在尝试获得独占锁,但统一进程的另一个线程仍然持有共享锁
-      */
+           ** same process is still holding a shared lock. */
           rc = SQLITE_BUSY;
         } else {          
           rc = proxyConchLock(pFile, myHostID, EXCLUSIVE_LOCK);
@@ -7001,7 +7467,6 @@ static int proxyTakeConch(unixFile *pFile){
         fsync(conchFile->h);
         /* If we created a new conch file (not just updated the contents of a 
          ** valid conch file), try to match the permissions of the database 
-     ** 如果我们创建了一个新的壳文件（而不仅仅是更新有效壳文件的内容），尝试匹配数据库的权限
          */
         if( rc==SQLITE_OK && createConch ){
           struct stat buf;
@@ -7009,7 +7474,7 @@ static int proxyTakeConch(unixFile *pFile){
           if( err==0 ){
             mode_t cmode = buf.st_mode&(S_IRUSR|S_IWUSR | S_IRGRP|S_IWGRP |
                                         S_IROTH|S_IWOTH);
-            /* try to match the database file R/W permissions, ignore failure */  //尝试匹配的数据库文件读/写权限，忽略失败
+            /* try to match the database file R/W permissions, ignore failure */
 #ifndef SQLITE_PROXY_DEBUG
             osFchmod(conchFile->h, cmode);
 #else
@@ -7047,7 +7512,7 @@ static int proxyTakeConch(unixFile *pFile){
           pFile->h = fd;
         }else{
           rc=SQLITE_CANTOPEN_BKPT; /* SQLITE_BUSY? proxyTakeConch called
-           during locking */  //返回SQLITE_BUSY的话，在加锁期间调用proxyTakeConch
+           during locking */
         }
       }
       if( rc==SQLITE_OK && !pCtx->lockProxy ){
@@ -7056,17 +7521,15 @@ static int proxyTakeConch(unixFile *pFile){
         if( rc!=SQLITE_OK && rc!=SQLITE_NOMEM && tryOldLockPath ){
           /* we couldn't create the proxy lock file with the old lock file path
            ** so try again via auto-naming 
-       ** 我们无法通过旧的锁文件路径创建代理锁文件，就通过自动命名再试一次
            */
           forceNewLockPath = 1;
           tryOldLockPath = 0;
-          continue; /* go back to the do {} while start point, try again */  //回到do {} while的起点再试一次
+          continue; /* go back to the do {} while start point, try again */
         }
       }
       if( rc==SQLITE_OK ){
         /* Need to make a copy of path if we extracted the value
          ** from the conch file or the path was allocated on the stack
-     ** 需要复制路径，如果我们提取的值来自壳文件或者路径被分配在堆栈上。
          */
         if( tempLockPath ){
           pCtx->lockProxyPath = sqlite3DbStrDup(0, tempLockPath);
@@ -7090,17 +7553,17 @@ static int proxyTakeConch(unixFile *pFile){
                rc==SQLITE_OK?"ok":"failed"));
       return rc;
     } while (1); /* in case we need to retry the :auto: lock file - 
-                 ** we should never get here except via the 'continue' call. */   //以防我们需要重试自动加锁文件——我们就应该不要执行到这里，除了通过continue调用
+                 ** we should never get here except via the 'continue' call. */
   }
 }
 
 /*
-** If pFile holds a lock on a conch file, then release that lock.       如果pFile在一个壳文件上持有锁，然后释放这个锁
+** If pFile holds a lock on a conch file, then release that lock.
 */
 static int proxyReleaseConch(unixFile *pFile){
-  int rc = SQLITE_OK;         /* Subroutine return code */    //子程序的返回码
-  proxyLockingContext *pCtx;  /* The locking context for the proxy lock */  //proxy lockde 的锁定内容
-  unixFile *conchFile;        /* Name of the conch file */    //壳文件的名字
+  int rc = SQLITE_OK;         /* Subroutine return code */
+  proxyLockingContext *pCtx;  /* The locking context for the proxy lock */
+  unixFile *conchFile;        /* Name of the conch file */
 
   pCtx = (proxyLockingContext *)pFile->lockingContext;
   conchFile = pCtx->conchFile;
@@ -7121,31 +7584,35 @@ static int proxyReleaseConch(unixFile *pFile){
 ** Store the conch filename in memory obtained from sqlite3_malloc().
 ** Make *pConchPath point to the new name.  Return SQLITE_OK on success
 ** or SQLITE_NOMEM if unable to obtain memory.
-**给定一个数据库文件的名称,计算其壳文件的名称。将壳文件名存储在sqlite3_malloc()获得的内存。使* pConchPath指向新名字。成功返回SQLITE_OK或者返回SQLITE_NOMEM，如果无法获得内存。
 **
 ** The caller is responsible for ensuring that the allocated memory
 ** space is eventually freed.
-** 调用者负责确认分配的内存空间是完全释放的
 **
 ** *pConchPath is set to NULL if a memory allocation error occurs.
-** *pConchPath设置为NULL，如果出现内存分配错误
+**
+** 对于给定的数据库文件名称，计算其conch文件的名称。 
+** 将从sqlite3_malloc（）获得的conch文件名存储在内存中。 Make * pConchPath指向新名称。 
+** 返回SQLITE_OK成功或SQLITE_NOMEM如果无法获得内存。
+**
+** 调用者负责确保分配的内存空间最终被释放。
+**
+** 如果发生内存分配错误，*pConchPath设置为NULL。
+**
 */
 static int proxyCreateConchPathname(char *dbPath, char **pConchPath){
-  int i;                        /* Loop counter */    //循环计数器
-  int len = (int)strlen(dbPath); /* Length of database filename - dbPath */   //数据库文件名的长度—dbPath
-  char *conchPath;              /* buffer in which to construct conch name */ //构建壳文件的缓冲区
+  int i;                        /* Loop counter */
+  int len = (int)strlen(dbPath); /* Length of database filename - dbPath */
+  char *conchPath;              /* buffer in which to construct conch name */
 
   /* Allocate space for the conch filename and initialize the name to
-  ** the name of the original database file.
-  **给壳文件名称分配空间并初始化名称为原始数据库文件的名称
-  */  
+  ** the name of the original database file. */  
   *pConchPath = conchPath = (char *)sqlite3_malloc(len + 8);
   if( conchPath==0 ){
     return SQLITE_NOMEM;
   }
   memcpy(conchPath, dbPath, len+1);
   
-  /* now insert a "." before the last / character */    //在最后一个/符号前插入一个“.”
+  /* now insert a "." before the last / character */
   for( i=(len-1); i>=0; i-- ){
     if( conchPath[i]=='/' ){
       i++;
@@ -7158,7 +7625,7 @@ static int proxyCreateConchPathname(char *dbPath, char **pConchPath){
     i++;
   }
 
-  /* append the "-conch" suffix to the file */    //给文件添加了"-conch"后缀
+  /* append the "-conch" suffix to the file */
   memcpy(&conchPath[i+1], "-conch", 7);
   assert( (int)strlen(conchPath) == len+7 );
 
@@ -7168,7 +7635,6 @@ static int proxyCreateConchPathname(char *dbPath, char **pConchPath){
 
 /* Takes a fully configured proxy locking-style unix file and switches
 ** the local lock file path 
-**需要完全配置的proxy加锁风格的Unix文件，并改变本地锁文件路径
 */
 static int switchLockProxyPath(unixFile *pFile, const char *path) {
   proxyLockingContext *pCtx = (proxyLockingContext*)pFile->lockingContext;
@@ -7179,7 +7645,7 @@ static int switchLockProxyPath(unixFile *pFile, const char *path) {
     return SQLITE_BUSY;
   }  
 
-  /* nothing to do if the path is NULL, :auto: or matches the existing path */  //如果路径为NULL就什么都不用做，自动或者匹配现有路径
+  /* nothing to do if the path is NULL, :auto: or matches the existing path */
   if( !path || path[0]=='\0' || !strcmp(path, ":auto:") ||
     (oldPath && !strncmp(oldPath, path, MAXPATHLEN)) ){
     return SQLITE_OK;
@@ -7202,32 +7668,32 @@ static int switchLockProxyPath(unixFile *pFile, const char *path) {
 /*
 ** pFile is a file that has been opened by a prior xOpen call.  dbPath
 ** is a string buffer at least MAXPATHLEN+1 characters in size.
-** pFile是由之前xOpen调用打开的一个文件。dbPath是一个大小至少为MAXPATHLEN+1个字符的字符串缓冲区
 **
 ** This routine find the filename associated with pFile and writes it
 ** int dbPath.
-** 这个程序是发现与pFile关联的文件名，并将其写入整型的dbPath
+**
+** pFile是由先前的xOpen调用打开的文件。 dbPath是一个字符串缓冲区，
+** 大小至少为MAXPATHLEN + 1个字符。
+**
+** 此例程查找与pFile相关联的文件名，并将其写入int dbPath。
+**
 */
 static int proxyGetDbPathForUnixFile(unixFile *pFile, char *dbPath){
 #if defined(__APPLE__)
   if( pFile->pMethod == &afpIoMethods ){
     /* afp style keeps a reference to the db path in the filePath field 
-    ** of the struct
-  ** afp风格保持了一个这个结构中文件路径域中的数据库路径的引用
-  */
+    ** of the struct */
     assert( (int)strlen((char*)pFile->lockingContext)<=MAXPATHLEN );
     strlcpy(dbPath, ((afpLockingContext *)pFile->lockingContext)->dbPath, MAXPATHLEN);
   } else
 #endif
   if( pFile->pMethod == &dotlockIoMethods ){
     /* dot lock style uses the locking context to store the dot lock
-    ** file path 
-  ** 点锁形式使用锁定内容来存储点锁文件路径
-  */
+    ** file path */
     int len = strlen((char *)pFile->lockingContext) - strlen(DOTLOCK_SUFFIX);
     memcpy(dbPath, (char *)pFile->lockingContext, len + 1);
   }else{
-    /* all other styles use the locking context to store the db file path */  //所有其他的锁定形式使用锁定内容来存储这个数据库文件路径
+    /* all other styles use the locking context to store the db file path */
     assert( strlen((char*)pFile->lockingContext)<=MAXPATHLEN );
     strlcpy(dbPath, (char *)pFile->lockingContext, MAXPATHLEN);
   }
@@ -7241,14 +7707,17 @@ static int proxyGetDbPathForUnixFile(unixFile *pFile, char *dbPath){
 ** the unix structure properly cleaned up at close time:
 **  ->lockingContext
 **  ->pMethod
-** 需要一个已经填写unix文件并改变它，这样所有文件锁定将本地proxy锁文件上执行。以下字段保存在锁定环境,这样他们可以恢复并且unix结构在最短的时间内正确清理:
-** ->lockingContext
-** ->pMethod
-
+**
+** 获取已填充的unix文件并更改它，因此所有文件锁定将在本地代理
+** 锁定文件上执行。 以下字段保留在锁定上下文中，以便可以恢复它们，
+** 并在关闭时正确清理unix结构：
+** - > lockingContext
+** - > pMethod
+**
 */
 static int proxyTransformUnixFile(unixFile *pFile, const char *path) {
   proxyLockingContext *pCtx;
-  char dbPath[MAXPATHLEN+1];       /* Name of the database file */  //数据库文件的名字
+  char dbPath[MAXPATHLEN+1];       /* Name of the database file */
   char *lockPath=NULL;
   int rc = SQLITE_OK;
   
@@ -7279,10 +7748,6 @@ static int proxyTransformUnixFile(unixFile *pFile, const char *path) {
       ** (c) the file system is read-only, then enable no-locking access.
       ** Ugh, since O_RDONLY==0x0000 we test for !O_RDWR since unixOpen asserts
       ** that openFlags will have only one of O_RDONLY or O_RDWR.
-    ** 如果（a）如果打开的标示符不是O_RDWR，（b）壳文件不在这，并且（c）文件
-    系统是只读的，然后启用没有锁定的访问。
-    Ugh，由于我们测试的O_RDONLY==0x0000！O_RDWR由于unixOpen判断打开标志将仅有
-    一个O_RDONLY或者O_RDWR。
       */
       struct statfs fsInfo;
       struct stat conchInfo;
@@ -7313,7 +7778,6 @@ static int proxyTransformUnixFile(unixFile *pFile, const char *path) {
   if( rc==SQLITE_OK ){
     /* all memory is allocated, proxys are created and assigned, 
     ** switch the locking context and pMethod then return.
-    所有内存被分配，代理被创建和分配，转换锁定内容和pMethod，然后返回。
     */
     pCtx->oldLockingContext = pFile->lockingContext;
     pFile->lockingContext = pCtx;
@@ -7336,7 +7800,10 @@ static int proxyTransformUnixFile(unixFile *pFile, const char *path) {
 
 /*
 ** This routine handles sqlite3_file_control() calls that are specific
-** to proxy locking.这个程序处理特定的代理锁定的sqlite3_file_control()调用。
+** to proxy locking.
+**
+** 此例程处理特定于代理锁定的sqlite3_file_control（）调用。
+**
 */
 static int proxyFileControl(sqlite3_file *id, int op, void *pArg){
   switch( op ){
@@ -7361,11 +7828,10 @@ static int proxyFileControl(sqlite3_file *id, int op, void *pArg){
       int isProxyStyle = (pFile->pMethod == &proxyIoMethods);
       if( pArg==NULL || (const char *)pArg==0 ){
         if( isProxyStyle ){
-          /* turn off proxy locking - not supported 关闭代理锁定-不支持*/
-          rc = SQLITE_ERROR /*SQLITE_PROTOCOL? SQLITE_MISUSE? 协议，误用*/;
+          /* turn off proxy locking - not supported */
+          rc = SQLITE_ERROR /*SQLITE_PROTOCOL? SQLITE_MISUSE?*/;
         }else{
           /* turn off proxy locking - already off - NOOP */
-            /*关闭代理锁定-已经关闭-等待*/
           rc = SQLITE_OK;
         }
       }else{
@@ -7382,7 +7848,7 @@ static int proxyFileControl(sqlite3_file *id, int op, void *pArg){
             rc = switchLockProxyPath(pFile, proxyPath);
           }
         }else{
-          /* turn on proxy file locking 打开代理文件锁定*/
+          /* turn on proxy file locking */
           rc = proxyTransformUnixFile(pFile, proxyPath);
         }
       }
@@ -7390,9 +7856,9 @@ static int proxyFileControl(sqlite3_file *id, int op, void *pArg){
     }
     default: {
       assert( 0 );  /* The call assures that only valid opcodes are sent */
-    }                  /*该调用确保只有有用的操作码被发送*/
+    }
   }
-  /*NOTREACHED 未达*/
+  /*NOTREACHED*/
   return SQLITE_ERROR;
 }
 
@@ -7400,8 +7866,10 @@ static int proxyFileControl(sqlite3_file *id, int op, void *pArg){
 ** Within this division (the proxying locking implementation) the procedures
 ** above this point are all utilities.  The lock-related methods of the
 ** proxy-locking sqlite3_io_method object follow.
-在这个部分（代理锁定实现）以上者一点的程序都是公用的。代理锁定
-sqlite3_io_method对象的lock-related方法如下：
+**
+** 在这个部门（代理锁定实现）中，上面的过程都是实用程序。 
+** 代理锁定sqlite3_io_method对象的锁相关方法如下。
+**
 */
 
 
@@ -7410,9 +7878,11 @@ sqlite3_io_method对象的lock-related方法如下：
 ** file by this or any other process. If such a lock is held, set *pResOut
 ** to a non-zero value otherwise *pResOut is set to zero.  The return value
 ** is set to SQLITE_OK unless an I/O error occurs during lock checking.
-这个程序检查是否在这个或任何其他进程指定的文件持有一个未决锁。如果持有这样的锁，
-设置*pResOut为一个非零值，否则设置*pResOut为0.设置返回值为SQLITE_OK，除非在
-锁检查期间发生一个I/O错误。
+**
+** 此例程检查此过程或任何其他过程是否在指定的文件上保留了RESERVED锁。 
+** 如果保持这样的锁定，将* pResOut设置为非零值，否则将* pResOut设置为零。 
+** 返回值设置为SQLITE_OK，除非在锁定检查期间发生I / O错误。
+**
 */
 static int proxyCheckReservedLock(sqlite3_file *id, int *pResOut) {
   unixFile *pFile = (unixFile*)id;
@@ -7432,31 +7902,26 @@ static int proxyCheckReservedLock(sqlite3_file *id, int *pResOut) {
 /*
 ** Lock the file with the lock specified by parameter eFileLock - one
 ** of the following:
-用参数eFileLock指定的锁锁定文件 - 以下之一：
 **
-**     (1) SHARED_LOCK             共享锁
-**     (2) RESERVED_LOCK           保留锁
-**     (3) PENDING_LOCK            未决锁
-**     (4) EXCLUSIVE_LOCK          排它锁
+**     (1) SHARED_LOCK
+**     (2) RESERVED_LOCK
+**     (3) PENDING_LOCK
+**     (4) EXCLUSIVE_LOCK
 **
 ** Sometimes when requesting one lock state, additional lock states
 ** are inserted in between.  The locking might fail on one of the later
 ** transitions leaving the lock state different from what it started but
 ** still short of its goal.  The following chart shows the allowed
 ** transitions and the inserted intermediate states:
-有时当请求一个锁状态，额外的锁状态会被插入在之间。在之后的一个转换锁定可能会
-失败，这个转换让锁状态与它开始不同但是仍然缺乏它的目标。下面的表显示了允许的
-转换和插入的中间状态。
 **
-**    UNLOCKED -> SHARED               
-**    SHARED -> RESERVED 
+**    UNLOCKED -> SHARED
+**    SHARED -> RESERVED
 **    SHARED -> (PENDING) -> EXCLUSIVE
 **    RESERVED -> (PENDING) -> EXCLUSIVE
 **    PENDING -> EXCLUSIVE
 **
 ** This routine will only increase a lock.  Use the sqlite3OsUnlock()
 ** routine to lower a locking level.
-这个程序将仅增加一个锁。使用sqlite3OsUnlock()程序来降低一个锁定级别。
 */
 static int proxyLock(sqlite3_file *id, int eFileLock) {
   unixFile *pFile = (unixFile*)id;
@@ -7478,11 +7943,9 @@ static int proxyLock(sqlite3_file *id, int eFileLock) {
 /*
 ** Lower the locking level on file descriptor pFile to eFileLock.  eFileLock
 ** must be either NO_LOCK or SHARED_LOCK.
-降低在文件描述符pFile到eFileLock上的锁定级别。eFileLock必须是无锁或者共享锁。
 **
 ** If the locking level of the file descriptor is already at or below
 ** the requested locking level, this routine is a no-op.
-如果文件描述符锁定的级别已经在或者低于请求锁定级别，这个例程是一个空操作。
 */
 static int proxyUnlock(sqlite3_file *id, int eFileLock) {
   unixFile *pFile = (unixFile*)id;
@@ -7494,7 +7957,7 @@ static int proxyUnlock(sqlite3_file *id, int eFileLock) {
       rc = proxy->pMethod->xUnlock((sqlite3_file*)proxy, eFileLock);
       pFile->eFileLock = proxy->eFileLock;
     }else{
-      /* conchHeld < 0 is lockless conchHeld<0则无锁*/
+      /* conchHeld < 0 is lockless */
     }
   }
   return rc;
@@ -7502,7 +7965,6 @@ static int proxyUnlock(sqlite3_file *id, int eFileLock) {
 
 /*
 ** Close a file that uses proxy locks.
-    关闭一个文件,使用代理锁
 */
 static int proxyClose(sqlite3_file *id) {
   if( id ){
@@ -7549,26 +8011,34 @@ static int proxyClose(sqlite3_file *id) {
 ** And since AFP is only supported on MacOSX, the proxy locking is also
 ** restricted to MacOSX.
 **
-//代理锁定风格目的是应用在AFP文件系统中，自从AFP只支持苹果MacOSX系统，代理锁定同样限定在MacOSX
+** 代理锁定样式与AFP文件系统一起使用。 由于AFP仅在MacOSX上受支持，
+** 因此代理锁定也仅限于MacOSX。
+** 
 **
 ******************* End of the proxy lock implementation **********************
-*******************************************************************************
+******************************************************************************/
+
 /*
-** Initialize the operating system interface.  //初始化操作系统接口
+** Initialize the operating system interface.
 **
 ** This routine registers all VFS implementations for unix-like operating
 ** systems.  This routine, and the sqlite3_os_end() routine that follows,
 ** should be the only routines in this file that are visible from other
 ** files.
-//这个例程为所有类Unix操作系统的VFS实现注册。
-//这个例程和紧随其后的sqlite3_os_end()例程应该是本文件中对其他文件可见的唯一例程
 **
 ** This routine is called once during SQLite initialization and by a
 ** single thread.  The memory allocation and mutex subsystems have not
 ** necessarily been initialized when this routine is called, and so they
 ** should not be used.
-//这个例程在SQLite初始化时便会通过单线程调用。
-//内存分配和互斥子系统不需要在这个例程被调用时初始化，所以它们不能被使用
+**
+** 初始化操作系统接口。
+**
+** 此例程注册所有VFS实施为unix类操作系统。 此例程和后面的sqlite3_os_end（）
+** 例程应该是此文件中从其他文件可见的唯一例程。
+**
+** 此例程在SQLite初始化期间调用一次，由单个线程调用。 当调用此例程时，
+** 内存分配和互斥子系统不必初始化，因此不应使用它们。
+**
 */
 int sqlite3_os_init(void){ 
   /* 
@@ -7579,28 +8049,30 @@ int sqlite3_os_init(void){
   ** and so we have to go through the intermediate pointer to avoid problems
   ** when compiling with -pedantic-errors on GCC.)
   **
-  //接下来的宏为一个sqlite3_vfs对象定义了一个初始化器。
-  //VFS的名字是NAME。pAppData是一个指向指针的指针，指向了"finder"函数。
-    （pAppData之所以是一个指向指针的指针是因为愚蠢地C90规则禁止一个来自正在分配函数指针的void*,因此我门
-      必须通过中间指针以避免GCC编译时报-pedantic-errors错误）
   ** The FINDER parameter to this macro is the name of the pointer to the
   ** finder-function.  The finder-function returns a pointer to the
   ** sqlite_io_methods object that implements the desired locking
   ** behaviors.  See the division above that contains the IOMETHODS
   ** macro for addition information on finder-functions.
   **
-  //FINDER变量对于这个宏时指向finder-function的指针的名字。
-  //finder-function返回一个指向sqlite_io_methods对象的指针，这个对象实现了请求锁的行为。
-  //看这个分部以上包含了在finder-functions上附加信息的IOMETHODS宏。
-  **
   ** Most finders simply return a pointer to a fixed sqlite3_io_methods
   ** object.  But the "autolockIoFinder" available on MacOSX does a little
   ** more than that; it looks at the filesystem type that hosts the 
   ** database file and tries to choose an locking method appropriate for
   ** that filesystem time.
-  //大部分探测器简单的返回指向修改过的sqlite3_io_methods对象的指针。
-  //但是在MacOSX上起作用的"autolockIoFinder"比这个起到很小的作用；
-  //它审视宿主数据库文件并且尝试选择一个适合那个文件系统的上锁方法的文件系统类型
+  **
+  ** 下列宏定义了sqlite3_vfs对象的初始化程序。 VFS的名称为NAME。 pAppData是指向
+  ** “finder”函数的指针的指针。 （pAppData是指向指针的指针，因为愚蠢的C90规则
+  ** 禁止将void *转换为函数指针，因此我们必须通过中间指针，以避免在GCC上使用
+  ** -pedantic-errors编译时出现问题）。
+  **
+  ** 此宏的FINDER参数是finder函数的指针名称。 finder函数返回一个指向实现所需锁定
+  ** 行为的sqlite_io_methods对象的指针。关于finder函数的附加信息，请参见上面包含
+  ** IOMETHODS宏的部分。
+  **
+  ** 大多数finder只返回一个指向固定的sqlite3_io_methods对象的指针。但MacOSX上可用的
+  ** “autolockIoFinder”会多一些，它会查看托管数据库文件的文件系统类型，并尝试
+  ** 选择适合该文件系统时间的锁定方法。
   */
   #define UNIXVFS(VFSNAME, FINDER) {                        \
     3,                    /* iVersion */                    \
@@ -7630,12 +8102,14 @@ int sqlite3_os_init(void){
   /*
   ** All default VFSes for unix are contained in the following array.
   **
-  //所有为Unix的默认VFS都包含了如下数组
-  **
   ** Note that the sqlite3_vfs.pNext field of the VFS object is modified
   ** by the SQLite core when the VFS is registered.  So the following
   ** array cannot be const.
-  //注意VFS对象的sqlite3_vfs.pNext域在VFS被注册时会被SQLite内核修改。所以接下来的数组不能声明为const.
+  **
+  ** UNIX的所有默认VFS包含在以下数组中。
+  **
+  ** 请注意，在注册VFS时，SQLite核心会修改VFS对象的sqlite3_vfs.pNext字段。
+  ** 所以下面的数组不能是const。
   */
   static sqlite3_vfs aVfs[] = {
 #if SQLITE_ENABLE_LOCKING_STYLE && (OS_VXWORKS || defined(__APPLE__))
@@ -7665,11 +8139,9 @@ int sqlite3_os_init(void){
 
   /* Double-check that the aSyscall[] array has been constructed
   ** correctly.  See ticket [bb3a86e890c8e96ab] */
-  //二次检验 aSyscall[]数组是否被正确构造。看标签[bb3a86e890c8e96ab]
   assert( ArraySize(aSyscall)==22 );
 
   /* Register all VFSes defined in the aVfs[] array */
-  //寄存器所有VFS定义在aVfs[]数组中
   for(i=0; i<(sizeof(aVfs)/sizeof(sqlite3_vfs)); i++){
     sqlite3_vfs_register(&aVfs[i], i==0);
   }
@@ -7679,12 +8151,15 @@ int sqlite3_os_init(void){
 /*
 ** Shutdown the operating system interface.
 **
-//关闭操作系统接口
 ** Some operating systems might need to do some cleanup in this routine,
 ** to release dynamically allocated objects.  But not on unix.
 ** This routine is a no-op for unix.
-//一些操作系统可能需要自这个历程中做一些清理工作，去释放动态分配对象。但是不在Unix。
-//这个例程对Unix不起作用。
+**
+** 关闭操作系统接口。
+**
+** 某些操作系统可能需要在此例程中进行一些清理，以释放动态分配的对象。
+** 但不会在unix中进行。 所以这个例程是unix的无操作。
+**
 */
 int sqlite3_os_end(void){ 
   return SQLITE_OK; 
