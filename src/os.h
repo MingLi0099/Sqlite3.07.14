@@ -21,7 +21,7 @@
 ** being included by every source file.
 **
 ** 这个头文件包含一些sqliteInt.h头文件，所以
-** 被所有引用的文件所包含
+** 被所有引用的文件所包含。
 */
 #ifndef _SQLITE_OS_H_
 #define _SQLITE_OS_H_
@@ -182,7 +182,7 @@
 ** 而这些就会导致Windows用户的误解，在Google上搜索"sqlite",找到开发
 ** 人员的联系方式，在深夜的时候喊他们起床，抱怨这个问题。
 ** 因此，默认的名称变成以"sqlite"结尾，临时文件仍然可以被区分。
-** 所以那些可以找到开发人员联系方式的人们将不再会抱怨这个问题
+** 所以那些可以找到开发人员联系方式的人们将不再会抱怨这个问题。
 ** 
 */
 #ifndef SQLITE_TEMP_FILE_PREFIX
